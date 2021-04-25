@@ -16,5 +16,7 @@ annotation class Status() {
         const val RUNNING = 2
         const val PAUSED = 3
         const val FINISHED = 4
+        const val CANCEL = 5
+        const val FAILED = 6
     }
 }

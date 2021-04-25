@@ -1,4 +1,4 @@
-package io.keyss.library.kdownloader.bean
+package io.keyss.library.kdownloader.core
 
 /**
  * @author Key
