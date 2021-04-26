@@ -65,8 +65,9 @@ abstract class AbstractDownloadTaskImpl(
     }
 
     /**
-     * 暂停任务，给外部调用
+     * 暂停任务，给外部调用，决定关闭此功能，具体可以看ReadMe矛盾点第一点
      */
+    @Deprecated("只是为了留下存在过的证明", ReplaceWith("cancel()"), DeprecationLevel.ERROR)
     fun pause() {
         status = Status.PAUSED
     }
@@ -104,6 +105,33 @@ abstract class AbstractDownloadTaskImpl(
             id == other.id || (url == other.url && localPath == other.localPath && name == other.name)
         } else {
             false
+        }
+    }
+
+    fun getStatusString(): String {
+        return when (status) {
+            Status.CREATED -> {
+                "已创建（未启动过）"
+            }
+            Status.CONNECTING -> {
+                "连接中"
+            }
+            Status.RUNNING -> {
+                "下载中"
+            }
+            Status.PAUSED -> {
+                "已暂停"
+            }
+            Status.FINISHED -> {
+                "已完成"
+            }
+            Status.CANCEL -> {
+                "取消"
+            }
+            Status.FAILED -> {
+                "失败（报错）"
+            }
+            else -> "未知"
         }
     }
 }

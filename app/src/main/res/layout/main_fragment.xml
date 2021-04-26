@@ -28,4 +28,10 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="取消" />
+
+    <androidx.appcompat.widget.AppCompatButton
+        android:id="@+id/b_pause_one"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="暂停一个" />
 </androidx.appcompat.widget.LinearLayoutCompat>

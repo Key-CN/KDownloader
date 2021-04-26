@@ -19,6 +19,9 @@ import io.keyss.library.kdownloader.bean.DefaultDownloadTask
 import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
 import io.keyss.library.kdownloader.core.IDownloadListener
 import io.keyss.library.kdownloader.utils.download
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainFragment : Fragment() {
 
@@ -31,7 +34,7 @@ class MainFragment : Fragment() {
     // length: 4372373
     val url1 = "https://media.w3.org/2010/05/sintel/trailer.mp4"
 
-    // length: 68936214
+    // length: 68936214，这个网差，可以测试超时
     val url2 = "http://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4"
 
     // length: 20289333
@@ -43,7 +46,7 @@ class MainFragment : Fragment() {
 
     val task1 = GoodCourseDownloadTask(1, url1, localPath2, null, true, 95, ResourceType.COURSEWARE_FILE, 188)
     val task2 = GoodCourseDownloadTask(2, url2, localPath2, null, true, 922, ResourceType.COURSEWARE_FILE, 123)
-    val task3 = GoodCourseDownloadTask(2, url3, localPath2, null, true, 96, ResourceType.COURSEWARE_FILE, 22)
+    val task3 = GoodCourseDownloadTask(3, url3, localPath2, null, true, 96, ResourceType.COURSEWARE_FILE, 22)
 
 
     override fun onCreateView(
@@ -51,6 +54,10 @@ class MainFragment : Fragment() {
         savedInstanceState: Bundle?
     ): View {
         return inflater.inflate(R.layout.main_fragment, container, false)
+    }
+
+    override fun onActivityCreated(savedInstanceState: Bundle?) {
+        super.onActivityCreated(savedInstanceState)
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -103,39 +110,37 @@ class MainFragment : Fragment() {
         LifecycleKDownloader.downloadListener = listener
 
 
-        val startButton = view.findViewById<AppCompatButton>(R.id.b_start_download)
-        startButton.setOnClickListener {
-            doDownload()
-
+        view.findViewById<AppCompatButton>(R.id.b_start_download).setOnClickListener {
+            LifecycleKDownloader.startTaskQueue()
         }
         view.findViewById<AppCompatButton>(R.id.b_pause).setOnClickListener {
-            //task.pause()
+            // 全部暂停
+            LifecycleKDownloader.stopTaskQueue()
+        }
+        view.findViewById<AppCompatButton>(R.id.b_pause_one).setOnClickListener {
+            //task2.pause()
         }
         view.findViewById<AppCompatButton>(R.id.b_cancel).setOnClickListener {
-            //task.cancel()
+            task2.cancel()
         }
         lifecycleScope.launchWhenResumed {
-            startButton.performClick()
-            //startButton.callOnClick()
-            //val statFs = StatFs("/storage/40C9-180F")
-            //println("statFs - freeBytes=${statFs.freeBytes}, freeBlocksLong=${statFs.freeBlocksLong}")
+            doDownload()
         }
-
-
+        //callback()
     }
 
     private fun doDownload() {
-        /*lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch(Dispatchers.IO) {
             delay(1_000)
             //LifecycleKDownloader.syncDownloadTask(task1)
             //LifecycleKDownloader.addTaskAndStart(task1)
             //LifecycleKDownloader.addTaskAndStart(task2)
             LifecycleKDownloader.addTask(task1)
             LifecycleKDownloader.addTask(task2)
+            LifecycleKDownloader.addTask(task3)
             task2.priority = 999
             LifecycleKDownloader.startTaskQueue()
-        }*/
-        callback()
+        }
     }
 
     /**

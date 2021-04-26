@@ -101,14 +101,16 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         this.mClient = client
     }
 
-    fun startTaskQueue(): Unit {
+    fun startTaskQueue() {
         isPause = false
-        // todo 启动队列中的任务
+        // 启动队列中的任务
         val runningTasks = getRunningTasks()
         if (runningTasks.size >= maxConnections) {
             return
         }
         val remainingSize = maxConnections - runningTasks.size
+        // fixme 这有一个问题，队列中优先级最高的任务，被手动暂停后，再次开启的还是这个任务？所以这个优先级的原则应该是要不要排除手动暂停的方式呢？这样的话难道优先级最高的反而要去队尾？这不科学
+        // 所以我决定去掉单任务暂停，只留下取消
         val waitingTasks = getWaitingTasks()
         Debug.log("还有${remainingSize}个可下载位置，以及${waitingTasks.size}个等待下载的任务")
         repeat(remainingSize) { index ->
@@ -151,6 +153,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         startTaskQueue()
     }
 
+    /**
+     * 其实没有用到suspend，只是为了防止在主线程调用，同步的方案是设计给在协程中等待返回的
+     */
     @Throws(Exception::class)
     suspend fun <T : AbstractDownloadTaskImpl> syncDownloadTask(task: T) {
         downloadWrap(task)
@@ -194,7 +199,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             }
         } finally {
             onTerminateEvent(task, event)
-            Debug.log("${task.name} - 当前状态=${task.status}")
             if (!isPause) {
                 // 继续下载下一个
                 startTaskQueue()
@@ -209,7 +213,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     @Throws(Exception::class)
     private fun <T : AbstractDownloadTaskImpl> downloadCore(task: T, event: DownloadEvent<T>? = null) {
         onStartEvent(task, event)
-        Debug.log("download core - name: ${task.name} url: ${task.url} path: ${task.localPath}")
         // todo 搜索任务栈中是否存在
 
         if (Looper.getMainLooper() == Looper.myLooper()) {
@@ -343,7 +346,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         if (task.isCancel()) {
             // 直接删除，取消删除可以不管错误
             val tempDelete = tempFile.delete()
-            Debug.log("${task.name} - 取消，删除=${tempDelete}")
+            Debug.log("${task.name} - 取消下载，删除=${tempDelete}")
         } else {
             // 判断是finish还是pause todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
             if (task.fileLength == task.totalDownloadedLength) {
@@ -351,20 +354,19 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                     throw KDownloadException("下载完成，临时文件重命名失败")
                 }
                 onFinishEvent(task, event)
-                Debug.log("${task.name} - 下载完成")
             } else {
                 onPauseEvent(task, event)
-                Debug.log("${task.name} - 下载暂停")
             }
             // 这里记录进度，而不是在每次写入时，不考虑突然crash的情况，因为每个buffer记录一次影响的效率更多，得不偿失，也可以考虑一种折中的策略
 
         }
-        Debug.log("${task.name} 下载过程结束（非完成）")
+        Debug.log("${task.name} downloadCore执行结束（非完成）")
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
     }
 
 
     private fun <T : AbstractDownloadTaskImpl> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
+        Debug.log("${task.name} - 当前状态=${task.getStatusString()}")
         event?.terminate?.invoke()
         downloadListener?.onTerminate(task)
     }
@@ -377,12 +379,15 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     private fun <T : AbstractDownloadTaskImpl> onFinishEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.FINISHED
+        Debug.log("${task.name} - 下载完成")
         event?.finish?.invoke()
         downloadListener?.onFinish(task)
     }
 
     private fun <T : AbstractDownloadTaskImpl> onPauseEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.PAUSED
+        // 要把队列中的任务加回队列中（目前方案没有移出，依旧在队列中），todo 如果是直接异步启动的话呢？是否应该在业务中处理？
+        Debug.log("${task.name} - 下载暂停")
         event?.pause?.invoke()
         downloadListener?.onPause(task)
     }
@@ -392,6 +397,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     private fun <T : AbstractDownloadTaskImpl> onStartEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.CONNECTING
+        Debug.log("download core - name: ${task.name} url: ${task.url} path: ${task.localPath}")
         // 如果业务需要二选一，可以再加个变量控制，走了自己的回调就不走全局回调
         //event?.start?.invoke() ?: downloadListener?.onStart(task)
         event?.start?.invoke()
