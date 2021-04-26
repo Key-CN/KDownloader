@@ -1,7 +1,6 @@
 package io.keyss.library.kdownloader.core
 
 import io.keyss.library.kdownloader.config.Status
-import io.keyss.library.kdownloader.utils.Debug
 
 /**
  * @author Key
@@ -17,6 +16,9 @@ abstract class AbstractDownloadTaskImpl(
 ) : IDownloadTask {
     internal var status: @Status Int = Status.CREATED
     var fileLength: Long = 0
+
+    // 剩余重试次数
+    var retryTimes = 20
 
     // 任务的总下载量，用以统计进度，而非每条线程的下载量或所下载到的Index
     var totalDownloadedLength: Long = 0
@@ -57,16 +59,9 @@ abstract class AbstractDownloadTaskImpl(
             }
         }
 
-
-    //test field
-    private var lastUpdateTime = 0L
     fun updatePercentageProgress() {
         // 向下取整，防止提早出现100
         percentageProgress = (totalDownloadedLength * 1.0 / fileLength * 100).toInt()
-        if (System.currentTimeMillis() - lastUpdateTime > 3_000) {
-            lastUpdateTime = System.currentTimeMillis()
-            Debug.log("$name - $percentageProgress%")
-        }
     }
 
     /**
@@ -105,7 +100,8 @@ abstract class AbstractDownloadTaskImpl(
 
     override fun equals(other: Any?): Boolean {
         return if (other is AbstractDownloadTaskImpl) {
-            url == other.url
+            //id相同 或者  url，存储路径，存储名字，三者相同才视为同一对象
+            id == other.id || (url == other.url && localPath == other.localPath && name == other.name)
         } else {
             false
         }

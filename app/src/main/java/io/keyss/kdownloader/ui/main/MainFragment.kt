@@ -15,8 +15,10 @@ import io.keyss.kdownloader.GoodCourseDownloadTask
 import io.keyss.kdownloader.R
 import io.keyss.kdownloader.ResourceType
 import io.keyss.library.kdownloader.LifecycleKDownloader
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import io.keyss.library.kdownloader.bean.DefaultDownloadTask
+import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
+import io.keyss.library.kdownloader.core.IDownloadListener
+import io.keyss.library.kdownloader.utils.download
 
 class MainFragment : Fragment() {
 
@@ -31,6 +33,7 @@ class MainFragment : Fragment() {
 
     // length: 68936214
     val url2 = "http://mirror.aarnet.edu.au/pub/TED-talks/911Mothers_2010W-480p.mp4"
+
     // length: 20289333
     val url3 = "https://dqunying1.jb51.net/201209/tools/Robotica_1080.wmv"
 
@@ -39,7 +42,8 @@ class MainFragment : Fragment() {
     val localPath2 = "/sdcard/test/"
 
     val task1 = GoodCourseDownloadTask(1, url1, localPath2, null, true, 95, ResourceType.COURSEWARE_FILE, 188)
-    val task2 = GoodCourseDownloadTask(2, url3, localPath2, null, true, 96, ResourceType.COURSEWARE_FILE, 22)
+    val task2 = GoodCourseDownloadTask(2, url2, localPath2, null, true, 922, ResourceType.COURSEWARE_FILE, 123)
+    val task3 = GoodCourseDownloadTask(2, url3, localPath2, null, true, 96, ResourceType.COURSEWARE_FILE, 22)
 
 
     override fun onCreateView(
@@ -69,6 +73,36 @@ class MainFragment : Fragment() {
             }
             .request()
 
+        val listener: IDownloadListener<AbstractDownloadTaskImpl> = object : IDownloadListener<AbstractDownloadTaskImpl> {
+            override fun onFail(task: AbstractDownloadTaskImpl, e: Exception) {
+                println("listener - onFail, task=${task.name}")
+            }
+
+            override fun onTerminate(task: AbstractDownloadTaskImpl) {
+                println("listener - onTerminate, task=${task.name}")
+            }
+
+            override fun onStart(task: AbstractDownloadTaskImpl) {
+                println("listener - onStart, task=${task.name}, isGoodCourseDownloadTask=${task is GoodCourseDownloadTask}, isDefaultTaskInfo=${task is DefaultDownloadTask}")
+            }
+
+            override fun onPause(task: AbstractDownloadTaskImpl) {
+                println("listener - onPause, task=${task.name}")
+            }
+
+            override fun onFinish(task: AbstractDownloadTaskImpl) {
+                println("listener - onFinish, task=${task.name}")
+            }
+
+            override fun onProgress(task: AbstractDownloadTaskImpl) {
+                //println("listener - onProgress, task=${task.name}")
+            }
+
+        }
+        LifecycleKDownloader.lifecycleOwner = this
+        LifecycleKDownloader.downloadListener = listener
+
+
         val startButton = view.findViewById<AppCompatButton>(R.id.b_start_download)
         startButton.setOnClickListener {
             doDownload()
@@ -83,11 +117,16 @@ class MainFragment : Fragment() {
         lifecycleScope.launchWhenResumed {
             startButton.performClick()
             //startButton.callOnClick()
+            //val statFs = StatFs("/storage/40C9-180F")
+            //println("statFs - freeBytes=${statFs.freeBytes}, freeBlocksLong=${statFs.freeBlocksLong}")
         }
+
+
     }
 
     private fun doDownload() {
-        lifecycleScope.launch(Dispatchers.IO) {
+        /*lifecycleScope.launch(Dispatchers.IO) {
+            delay(1_000)
             //LifecycleKDownloader.syncDownloadTask(task1)
             //LifecycleKDownloader.addTaskAndStart(task1)
             //LifecycleKDownloader.addTaskAndStart(task2)
@@ -95,6 +134,37 @@ class MainFragment : Fragment() {
             LifecycleKDownloader.addTask(task2)
             task2.priority = 999
             LifecycleKDownloader.startTaskQueue()
+        }*/
+        callback()
+    }
+
+    /**
+     * 回调的方式调用下载
+     */
+    private fun callback() {
+        var lastProgress1 = -1
+        lifecycleScope.download(task2) {
+            onTerminate {
+                println("download - onComplete")
+            }
+            onStart {
+                println("download - onStart, ${Thread.currentThread().name}")
+            }
+            onFail {
+                println("download - onFail, e=$it")
+            }
+            onPause {
+                println("download - onPause")
+            }
+            onProgress {
+                /*if (lastProgress1 != task.percentageProgress) {
+                    lastProgress1 = task.percentageProgress
+                    println("download - onProgress - $lastProgress1")
+                }*/
+            }
+            onFinish {
+                println("download - onFinish")
+            }
         }
     }
 }

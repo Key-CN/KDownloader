@@ -5,6 +5,7 @@ import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.OnLifecycleEvent
 import io.keyss.library.kdownloader.core.AbstractKDownloader
+import io.keyss.library.kdownloader.utils.Debug
 
 /**
  * @author Key
@@ -16,11 +17,13 @@ object LifecycleKDownloader : AbstractKDownloader() {
     private val lifecycleObserver: LifecycleObserver = object : LifecycleObserver {
         @OnLifecycleEvent(Lifecycle.Event.ON_START)
         fun onStart() {
+            Debug.log("LifecycleKDownloader onStart")
             startTaskQueue()
         }
 
         @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
         fun onStop() {
+            Debug.log("LifecycleKDownloader onStop")
             stopTaskQueue()
         }
     }
