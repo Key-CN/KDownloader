@@ -37,7 +37,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         const val DEFAULT_BUFFER_SIZE = 32 * 1024
     }
 
-    private val mTasks: CopyOnWriteArrayList<AbstractDownloadTaskImpl> = CopyOnWriteArrayList()
+    val tasks: CopyOnWriteArrayList<AbstractDownloadTaskImpl> = CopyOnWriteArrayList()
     var downloadListener: IDownloadListener<AbstractDownloadTaskImpl>? = null
     private var mTaskPersistenceType: @PersistenceType Int = taskPersistenceType
     private var isPause = false
@@ -111,6 +111,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         val remainingSize = maxConnections - runningTasks.size
         // fixme 这有一个问题，队列中优先级最高的任务，被手动暂停后，再次开启的还是这个任务？所以这个优先级的原则应该是要不要排除手动暂停的方式呢？这样的话难道优先级最高的反而要去队尾？这不科学
         // 所以我决定去掉单任务暂停，只留下取消
+        // todo 已经完成和已取消的任务，考虑处理方式，理论上检测是否下载应该已本地文件为准，而非任务队列
         val waitingTasks = getWaitingTasks()
         Debug.log("还有${remainingSize}个可下载位置，以及${waitingTasks.size}个等待下载的任务")
         repeat(remainingSize) { index ->
@@ -134,8 +135,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 添加一个下载任务，不启动
      */
-    fun <T : AbstractDownloadTaskImpl> addTask(task: T): Boolean {
-        val addIfAbsent = mTasks.addIfAbsent(task)
+    open fun <T : AbstractDownloadTaskImpl> addTask(task: T): Boolean {
+        val addIfAbsent = tasks.addIfAbsent(task)
         // CopyOnWriteArrayList 不能排序，取的时候排
         /*mTasks.sortBy {
             it.priority
@@ -170,15 +171,32 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     fun getRunningTasks(): List<AbstractDownloadTaskImpl> {
-        return mTasks.filter {
+        return tasks.filter {
             it.isStarting()
         }
     }
 
     fun getWaitingTasks(): List<AbstractDownloadTaskImpl> {
-        return mTasks.filter {
+        return tasks.filter {
             it.isWaiting()
         }.sortedByDescending { it.priority }
+    }
+
+    fun getInQueueTasks(): List<AbstractDownloadTaskImpl> {
+        return tasks.filter {
+            it.isInQueue()
+        }
+    }
+
+    /**
+     * 清楚所有生命周期已完结的任务，包括finish和cancel
+     */
+    fun removeAllLifecycleOverTasks() {
+        tasks.removeAll {
+            it.isLifecycleOver()
+        }
+        // Call requires API level 24
+        // tasks.removeIf
     }
 
     @Throws(Exception::class)
@@ -297,6 +315,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // A mapped byte buffer and the file mapping that it represents remain valid until the buffer itself is garbage-collected. ——JavaDoc
         val writeTempFile = RandomAccessFile(tempFile, "rw")
         writeTempFile.setLength(task.fileLength)
+        // 到这里才创建出file
+        task.relatedFiles.addIfAbsent(tempFile)
         // 需要校验写了多少了
         /*if (task.maxConnections == 1) {
             val getRequest = headRequest.newBuilder().get().build()
@@ -344,9 +364,10 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 流关闭失败是否会导致文件不完整或其他问题
         writeTempFile.closeQuietly()
         if (task.isCancel()) {
+            Debug.log("${task.name} - 取消下载")
             // 直接删除，取消删除可以不管错误
-            val tempDelete = tempFile.delete()
-            Debug.log("${task.name} - 取消下载，删除=${tempDelete}")
+            //val tempDelete = tempFile.delete()
+            task.deleteRelatedFiles()
         } else {
             // 判断是finish还是pause todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
             if (task.fileLength == task.totalDownloadedLength) {
@@ -354,6 +375,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                     throw KDownloadException("下载完成，临时文件重命名失败")
                 }
                 onFinishEvent(task, event)
+                // 比较后存入，重命名成功后剩下一个
+                task.relatedFiles.addIfAbsent(file)
+                task.relatedFiles.remove(tempFile)
             } else {
                 onPauseEvent(task, event)
             }

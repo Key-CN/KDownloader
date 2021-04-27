@@ -44,9 +44,9 @@ class MainFragment : Fragment() {
     val localPath1 = "/mnt/media_rw/40C9-180F/test/"
     val localPath2 = "/sdcard/test/"
 
-    val task1 = GoodCourseDownloadTask(1, url1, localPath2, null, true, 95, ResourceType.COURSEWARE_FILE, 188)
-    val task2 = GoodCourseDownloadTask(2, url2, localPath2, null, true, 922, ResourceType.COURSEWARE_FILE, 123)
-    val task3 = GoodCourseDownloadTask(3, url3, localPath2, null, true, 96, ResourceType.COURSEWARE_FILE, 22)
+    val task1 = GoodCourseDownloadTask(1, url1, localPath2, null, true, 95, ResourceType.LAUNCHER_APK, 188)
+    val task2 = GoodCourseDownloadTask(2, url2, localPath2, null, true, 922, ResourceType.LAUNCHER_APK, 123)
+    val task3 = GoodCourseDownloadTask(3, url3, localPath2, null, true, 96, ResourceType.LAUNCHER_APK, 22)
 
 
     override fun onCreateView(

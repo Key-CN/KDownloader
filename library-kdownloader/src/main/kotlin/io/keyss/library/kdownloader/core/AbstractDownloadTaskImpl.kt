@@ -1,6 +1,11 @@
 package io.keyss.library.kdownloader.core
 
 import io.keyss.library.kdownloader.config.Status
+import io.keyss.library.kdownloader.utils.Debug
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * @author Key
@@ -13,6 +18,7 @@ abstract class AbstractDownloadTaskImpl(
     val localPath: String,
     var name: String? = null,
     val isDeleteExist: Boolean = true,
+    val relatedFiles: CopyOnWriteArrayList<File> = CopyOnWriteArrayList()
 ) : IDownloadTask {
     internal var status: @Status Int = Status.CREATED
     var fileLength: Long = 0
@@ -80,7 +86,25 @@ abstract class AbstractDownloadTaskImpl(
      * 取消任务，给外部调用
      */
     fun cancel() {
+        val needDelete = !isStarting()
         status = Status.CANCEL
+        if (needDelete) {
+            GlobalScope.launch {
+                deleteRelatedFiles()
+            }
+        }
+    }
+
+    fun deleteRelatedFiles() {
+        relatedFiles.forEach {
+            val delete = it.delete()
+            val remove = relatedFiles.remove(it)
+            Debug.log("${it.name} - 删除${if (delete) "成功" else "失败"}, 从列表移除${if (remove) "成功" else "失败"}")
+        }
+    }
+
+    fun isFinished(): Boolean {
+        return compareStatus(Status.FINISHED)
     }
 
     fun isCancel(): Boolean {
@@ -93,6 +117,17 @@ abstract class AbstractDownloadTaskImpl(
 
     fun isWaiting(): Boolean {
         return compareStatus(Status.CREATED) || compareStatus(Status.PAUSED)
+    }
+
+    fun isInQueue(): Boolean {
+        return isWaiting() || isStarting()
+    }
+
+    /**
+     * 生命周期结束包含：已完成、已取消
+     */
+    fun isLifecycleOver(): Boolean {
+        return isCancel() || isFinished()
     }
 
     fun compareStatus(status: @Status Int): Boolean {
