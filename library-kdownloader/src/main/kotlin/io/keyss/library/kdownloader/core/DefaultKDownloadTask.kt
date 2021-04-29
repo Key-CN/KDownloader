@@ -5,14 +5,18 @@ package io.keyss.library.kdownloader.core
  * Time: 2021/04/28 15:14
  * Description:
  */
-class DefaultKDownloadTask(id: Int, url: String, localPath: String, name: String? = null, isDeleteExist: Boolean = true) :
-    AbstractKDownloadTask(id, url, localPath, name, isDeleteExist) {
-
+class DefaultKDownloadTask(
+    id: Int,
+    url: String,
+    localPath: String,
+    name: String? = null,
+    isDeleteExist: Boolean = true
+) : AbstractKDownloadTask(id, url, localPath, name, isDeleteExist) {
 
     /**
      * 还要再优化
      */
-    class Builder : AbstractKDownloadTask.Builder<DefaultKDownloadTask>() {
+    open class Builder : AbstractKDownloadTask.Builder<DefaultKDownloadTask>() {
         override fun build(): DefaultKDownloadTask {
             afterBuild()
             return DefaultKDownloadTask(id, url, localPath, name, isDeleteExist).apply {

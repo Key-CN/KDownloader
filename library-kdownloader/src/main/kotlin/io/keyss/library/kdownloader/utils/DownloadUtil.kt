@@ -4,6 +4,7 @@ import io.keyss.library.kdownloader.DefaultKDownloader
 import io.keyss.library.kdownloader.LifecycleKDownloader
 import io.keyss.library.kdownloader.core.AbstractKDownloadTask
 import io.keyss.library.kdownloader.core.AbstractKDownloader
+import io.keyss.library.kdownloader.core.TaskGroup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -53,10 +54,21 @@ fun <T : AbstractKDownloadTask> T.async(event: DownloadEvent<AbstractKDownloadTa
     mDefaultKDownloader!!.asyncDownloadTask(this, event)
 }
 
-fun <T : AbstractKDownloadTask> T.inQueue(event: DownloadEvent<T>): Unit {
-    mDefaultKDownloader!!.addTask(this)
+fun <T : AbstractKDownloadTask> T.inQueue(): Boolean {
+    return mDefaultKDownloader!!.addTask(this)
 }
 
-fun <T : AbstractKDownloadTask> T.inQueueAndStart(event: DownloadEvent<T>): Unit {
-    mDefaultKDownloader!!.addTaskAndStart(this)
+fun <T : AbstractKDownloadTask> T.inQueueAndStart(): Boolean {
+    return mDefaultKDownloader!!.addTaskAndStart(this)
+}
+
+/**
+ * todo 考虑要不要给个参数去一条新的线程
+ */
+fun <T : TaskGroup> T.inQueue(): Boolean {
+    return mDefaultKDownloader!!.addTaskGroup(this)
+}
+
+fun <T : TaskGroup> T.inQueueAndStart(): Boolean {
+    return mDefaultKDownloader!!.addTaskGroupAndStart(this)
 }

@@ -129,6 +129,10 @@ abstract class AbstractKDownloadTask(
         return compareStatus(Status.FINISHED) || compareStatus(Status.FAILED) || compareStatus(Status.CANCEL)
     }
 
+    fun isFailed(): Boolean {
+        return compareStatus(Status.FAILED)
+    }
+
     fun isFinished(): Boolean {
         return compareStatus(Status.FINISHED)
     }
@@ -197,13 +201,13 @@ abstract class AbstractKDownloadTask(
     }
 
     abstract class Builder<T : AbstractKDownloadTask> {
-        var id: Int = 0
-        lateinit var url: String
-        var localPath: String = ""
-        var name: String? = null
-        var isDeleteExist: Boolean = true
-        var priority: Int = 0
-        var maxConnections = 1
+        protected var id: Int = 0
+        protected lateinit var url: String
+        protected var localPath: String = ""
+        protected var name: String? = null
+        protected var isDeleteExist: Boolean = true
+        protected var priority: Int = 0
+        protected var maxConnections = 1
 
         fun url(url: String) = apply {
             this.url = url
@@ -233,7 +237,7 @@ abstract class AbstractKDownloadTask(
             this.maxConnections = maxConnections
         }
 
-        @Throws
+        @Throws(Exception::class)
         fun afterBuild() {
             // 顺带优先校验url有没有赋值
             val urlHashCode = url.hashCode()
@@ -256,7 +260,7 @@ abstract class AbstractKDownloadTask(
         /**
          * 可以调用afterBuild()也可以使用自己的逻辑
          */
-        @Throws
+        @Throws(Exception::class)
         abstract fun build(): T
     }
 }

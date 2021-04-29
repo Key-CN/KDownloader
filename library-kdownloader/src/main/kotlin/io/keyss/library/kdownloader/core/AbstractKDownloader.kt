@@ -159,16 +159,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 添加一个下载任务，并启动
      */
-    fun <T : AbstractKDownloadTask> addTaskAndStart(task: T): Unit {
+    fun <T : AbstractKDownloadTask> addTaskAndStart(task: T): Boolean {
         val addIfAbsent = addTask(task)
         Debug.log("添加任务并启动，添加=$addIfAbsent")
         startTaskQueue()
+        return addIfAbsent
     }
 
     /**
      * 已组级别概念进行下载，一整组资源完成算完成
      */
-    @Throws
+    @Throws(Exception::class)
     fun <T : AbstractKDownloadTask> createTaskGroup(tasks: Collection<T>): Boolean {
         if (tasks.isEmpty()) {
             return false
@@ -181,10 +182,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             it.group = taskGroup
         }
         // 开始下载
-        return mTasks.addAll(tasks)
+        val addAllSuccessful = mTasks.addAll(tasks)
+        if (!isPause) {
+            startTaskQueue()
+        }
+        return addAllSuccessful
     }
 
-    @Throws
+    @Throws(Exception::class)
     fun <T : TaskGroup> addTaskGroup(taskGroup: T): Boolean {
         if (taskGroup.tasks.isEmpty()) {
             return false
@@ -196,16 +201,21 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             it.group = taskGroup
         }
         // 开始下载
-        return mTasks.addAll(taskGroup.tasks)
+        val addAllSuccessful = mTasks.addAll(taskGroup.tasks)
+        if (!isPause) {
+            startTaskQueue()
+        }
+        return addAllSuccessful
     }
 
     /**
      * 添加任务组并启动
      */
-    fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T) {
+    fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T):Boolean {
         val addTaskGroup = addTaskGroup(taskGroup)
         Debug.log("添加任务组并启动，添加=$addTaskGroup")
         startTaskQueue()
+        return addTaskGroup
     }
 
     /**
@@ -456,7 +466,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
     }
 
-    @Throws
+    @Throws(Exception::class)
     private fun getContentLengthLong(url: String): Long {
         val headRequest = Request
             .Builder()
