@@ -1,6 +1,6 @@
 package io.keyss.library.kdownloader.bean
 
-import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
+import io.keyss.library.kdownloader.core.AbstractKDownloadTask
 
 /**
  * @author Key
@@ -8,4 +8,4 @@ import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
  * Description:
  */
 class DefaultDownloadTask(id: Int, url: String, localPath: String, name: String? = null, isDeleteExist: Boolean = true) :
-    AbstractDownloadTaskImpl(id, url, localPath, name, isDeleteExist)
+    AbstractKDownloadTask(id, url, localPath, name, isDeleteExist)

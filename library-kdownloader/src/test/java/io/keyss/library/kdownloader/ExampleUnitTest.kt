@@ -1,10 +1,9 @@
 package io.keyss.library.kdownloader
 
-import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
+import io.keyss.library.kdownloader.config.StorageInsufficientException
 import io.keyss.library.kdownloader.utils.MD5Util
+import org.junit.Assert.assertEquals
 import org.junit.Test
-
-import org.junit.Assert.*
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -34,6 +33,47 @@ class ExampleUnitTest {
         println(tasks)
         tasks.removeIf { it % 2 == 0 }
         println(tasks)
+    }
 
+    @Test
+    fun hashTest() {
+        val e = StorageInsufficientException("可用空间为0", 0, 10000)
+        var b =
+            """
+                                    * 受影响教室：1231231231
+                                    * 设备号：12312312313
+                                    * 环境：123123123
+                                    * 版本：123123123(12312313)
+                                    * 文件名：1231231
+                                    * URL：123123
+                                    * 错误信息：
+                                        ```${e.message}```
+                                    """.trimIndent()
+        var b2 =
+            """
+                                    * 受影响教室：1231231231
+                                    * 设备号：12312312313
+                                    * 环境：123123123
+                                    * 版本：123123123(12312313)
+                                    * 文件名：1231231
+                                    * URL：123123
+                                    * 错误信息：
+                                        ```${e.message}```
+                                    """.trimIndent()
+        var b3 = b
+
+        b = MD5Util.stringToMD5(b)
+        b2 = MD5Util.stringToMD5(b2)
+        b3 = MD5Util.stringToMD5(b3)
+        // 相同的字符串，hash相等
+        println("d388a72acfff969928491a75a3aec8f6".hashCode())
+        println(b.hashCode())
+        println(b3.hashCode())
+        println(b2.hashCode())
+    }
+
+
+    @Test
+    fun castTest() {
     }
 }

@@ -14,6 +14,7 @@ import io.keyss.library.kdownloader.utils.Debug
  * 也可以使用[ProcessLifecycleOwner]，需要添加[implementation "androidx.lifecycle:lifecycle-process:$lifecycle_version"]
  */
 object LifecycleKDownloader : AbstractKDownloader() {
+
     private val lifecycleObserver: LifecycleObserver = object : LifecycleObserver {
         @OnLifecycleEvent(Lifecycle.Event.ON_START)
         fun onStart() {

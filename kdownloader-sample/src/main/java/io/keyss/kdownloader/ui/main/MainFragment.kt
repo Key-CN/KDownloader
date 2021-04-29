@@ -12,12 +12,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import com.github.jokar.permission.PermissionUtil
 import io.keyss.kdownloader.GoodCourseDownloadTask
+import io.keyss.kdownloader.GroupDownloadListenerImpl
 import io.keyss.kdownloader.R
 import io.keyss.kdownloader.ResourceType
 import io.keyss.library.kdownloader.LifecycleKDownloader
-import io.keyss.library.kdownloader.bean.DefaultDownloadTask
-import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
 import io.keyss.library.kdownloader.core.IDownloadListener
+import io.keyss.library.kdownloader.core.MyTaskGroup
 import io.keyss.library.kdownloader.utils.download
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -80,32 +80,7 @@ class MainFragment : Fragment() {
             }
             .request()
 
-        val listener: IDownloadListener<AbstractDownloadTaskImpl> = object : IDownloadListener<AbstractDownloadTaskImpl> {
-            override fun onFail(task: AbstractDownloadTaskImpl, e: Exception) {
-                println("listener - onFail, task=${task.name}")
-            }
-
-            override fun onTerminate(task: AbstractDownloadTaskImpl) {
-                println("listener - onTerminate, task=${task.name}")
-            }
-
-            override fun onStart(task: AbstractDownloadTaskImpl) {
-                println("listener - onStart, task=${task.name}, isGoodCourseDownloadTask=${task is GoodCourseDownloadTask}, isDefaultTaskInfo=${task is DefaultDownloadTask}")
-            }
-
-            override fun onPause(task: AbstractDownloadTaskImpl) {
-                println("listener - onPause, task=${task.name}")
-            }
-
-            override fun onFinish(task: AbstractDownloadTaskImpl) {
-                println("listener - onFinish, task=${task.name}")
-            }
-
-            override fun onProgress(task: AbstractDownloadTaskImpl) {
-                //println("listener - onProgress, task=${task.name}")
-            }
-
-        }
+        val listener: IDownloadListener = GroupDownloadListenerImpl
         LifecycleKDownloader.lifecycleOwner = this
         LifecycleKDownloader.downloadListener = listener
 
@@ -124,9 +99,18 @@ class MainFragment : Fragment() {
             task2.cancel()
         }
         lifecycleScope.launchWhenResumed {
-            doDownload()
+//            doDownload()
         }
         //callback()
+        lifecycleScope.launch(Dispatchers.IO) {
+            startGroup()
+        }
+    }
+
+    fun startGroup(): Unit {
+        //LifecycleKDownloader.createTaskGroupAndStart(listOf(task1, task2, task3))
+        val myTaskGroup = MyTaskGroup(123, listOf(task1, task2, task3), "我是一个组")
+        LifecycleKDownloader.addTaskGroupAndStart(myTaskGroup)
     }
 
     private fun doDownload() {
@@ -135,11 +119,11 @@ class MainFragment : Fragment() {
             //LifecycleKDownloader.syncDownloadTask(task1)
             //LifecycleKDownloader.addTaskAndStart(task1)
             //LifecycleKDownloader.addTaskAndStart(task2)
-            LifecycleKDownloader.addTask(task1)
+            /*LifecycleKDownloader.addTask(task1)
             LifecycleKDownloader.addTask(task2)
             LifecycleKDownloader.addTask(task3)
             task2.priority = 999
-            LifecycleKDownloader.startTaskQueue()
+            LifecycleKDownloader.startTaskQueue()*/
         }
     }
 
@@ -147,7 +131,6 @@ class MainFragment : Fragment() {
      * 回调的方式调用下载
      */
     private fun callback() {
-        var lastProgress1 = -1
         lifecycleScope.download(task2) {
             onTerminate {
                 println("download - onComplete")
@@ -162,10 +145,7 @@ class MainFragment : Fragment() {
                 println("download - onPause")
             }
             onProgress {
-                /*if (lastProgress1 != task.percentageProgress) {
-                    lastProgress1 = task.percentageProgress
-                    println("download - onProgress - $lastProgress1")
-                }*/
+                println("download - onProgress - ${(task as GoodCourseDownloadTask).resourceId} - ${task.percentageProgress}%")
             }
             onFinish {
                 println("download - onFinish")

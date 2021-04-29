@@ -1,14 +1,10 @@
 package io.keyss.library.kdownloader.core
 
 import android.os.Looper
-import android.os.StatFs
 import io.keyss.library.kdownloader.config.KDownloadException
 import io.keyss.library.kdownloader.config.PersistenceType
 import io.keyss.library.kdownloader.config.Status
-import io.keyss.library.kdownloader.config.StorageInsufficientException
-import io.keyss.library.kdownloader.utils.Debug
-import io.keyss.library.kdownloader.utils.DownloadEvent
-import io.keyss.library.kdownloader.utils.MD5Util
+import io.keyss.library.kdownloader.utils.*
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -37,10 +33,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         const val DEFAULT_BUFFER_SIZE = 32 * 1024
     }
 
-    val tasks: CopyOnWriteArrayList<AbstractDownloadTaskImpl> = CopyOnWriteArrayList()
-    var downloadListener: IDownloadListener<AbstractDownloadTaskImpl>? = null
+    val mTasks: CopyOnWriteArrayList<AbstractKDownloadTask> = CopyOnWriteArrayList()
+    var downloadListener: IDownloadListener? = null
     private var mTaskPersistenceType: @PersistenceType Int = taskPersistenceType
+
+    /**
+     * 整个下载器的状态，默认就是运行状态。
+     */
     private var isPause = false
+
+    /**是否为默认下载器*/
+    private var isDefault = false
 
     /**
      * 最小进度事件输出时间，默认5秒，想要每次都输出只要设小就行了
@@ -79,6 +82,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     private var mClient = OkHttpClient
         .Builder()
         // 下载文件可能很大，不实用超时，只管理进度超时，其他超时都采用默认都10秒
+        // todo 我可能对这个readTimeout存在误解，再深究
         //.readTimeout(0, TimeUnit.NANOSECONDS)
         .build()
 
@@ -102,6 +106,10 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     fun startTaskQueue() {
+        // 如果正在运行中返回，也可以执行，如果有空位置则补进去
+        /*if () {
+            return
+        }*/
         isPause = false
         // 启动队列中的任务
         val runningTasks = getRunningTasks()
@@ -135,22 +143,77 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 添加一个下载任务，不启动
      */
-    open fun <T : AbstractDownloadTaskImpl> addTask(task: T): Boolean {
-        val addIfAbsent = tasks.addIfAbsent(task)
+    open fun addTask(task: AbstractKDownloadTask): Boolean {
+        val addIfAbsent = mTasks.addIfAbsent(task)
         // CopyOnWriteArrayList 不能排序，取的时候排
         /*mTasks.sortBy {
             it.priority
         }*/
         Debug.log("仅添加任务，添加=$addIfAbsent")
+        if (!isPause) {
+            startTaskQueue()
+        }
         return addIfAbsent
     }
 
     /**
      * 添加一个下载任务，并启动
      */
-    fun <T : AbstractDownloadTaskImpl> addTaskAndStart(task: T): Unit {
+    fun <T : AbstractKDownloadTask> addTaskAndStart(task: T): Unit {
         val addIfAbsent = addTask(task)
         Debug.log("添加任务并启动，添加=$addIfAbsent")
+        startTaskQueue()
+    }
+
+    /**
+     * 已组级别概念进行下载，一整组资源完成算完成
+     */
+    @Throws
+    fun <T : AbstractKDownloadTask> createTaskGroup(tasks: Collection<T>): Boolean {
+        if (tasks.isEmpty()) {
+            return false
+        }
+
+        val taskGroup = TaskGroup(tasks.hashCode(), tasks)
+        tasks.forEach {
+            // 相当于顺便检查正确性
+            taskGroup.addTotalLength(getContentLengthLong(it.url))
+            it.group = taskGroup
+        }
+        // 开始下载
+        return mTasks.addAll(tasks)
+    }
+
+    @Throws
+    fun <T : TaskGroup> addTaskGroup(taskGroup: T): Boolean {
+        if (taskGroup.tasks.isEmpty()) {
+            return false
+        }
+
+        taskGroup.tasks.forEach {
+            // 相当于顺便检查正确性
+            taskGroup.addTotalLength(getContentLengthLong(it.url))
+            it.group = taskGroup
+        }
+        // 开始下载
+        return mTasks.addAll(taskGroup.tasks)
+    }
+
+    /**
+     * 添加任务组并启动
+     */
+    fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T) {
+        val addTaskGroup = addTaskGroup(taskGroup)
+        Debug.log("添加任务组并启动，添加=$addTaskGroup")
+        startTaskQueue()
+    }
+
+    /**
+     * 添加任务组并启动
+     */
+    fun <T : AbstractKDownloadTask> createTaskGroupAndStart(tasks: Collection<T>) {
+        val addTaskGroup = createTaskGroup(tasks)
+        Debug.log("创建任务组并启动，添加=$addTaskGroup")
         startTaskQueue()
     }
 
@@ -158,32 +221,32 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 其实没有用到suspend，只是为了防止在主线程调用，同步的方案是设计给在协程中等待返回的
      */
     @Throws(Exception::class)
-    suspend fun <T : AbstractDownloadTaskImpl> syncDownloadTask(task: T) {
-        downloadWrap(task)
+    suspend fun <T : AbstractKDownloadTask> syncDownloadTask(task: T): T = task.apply {
+        downloadWrap(this)
     }
 
     /**
      * 异步单任务，直接启动型，跳过队列
      */
     @Throws(Exception::class)
-    fun <T : AbstractDownloadTaskImpl> asyncDownloadTask(task: T, event: DownloadEvent<T>) {
+    fun <T : AbstractKDownloadTask> asyncDownloadTask(task: T, event: DownloadEvent<T>) {
         downloadWrap(task, event)
     }
 
-    fun getRunningTasks(): List<AbstractDownloadTaskImpl> {
-        return tasks.filter {
+    fun getRunningTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
             it.isStarting()
         }
     }
 
-    fun getWaitingTasks(): List<AbstractDownloadTaskImpl> {
-        return tasks.filter {
+    fun getWaitingTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
             it.isWaiting()
         }.sortedByDescending { it.priority }
     }
 
-    fun getInQueueTasks(): List<AbstractDownloadTaskImpl> {
-        return tasks.filter {
+    fun getInQueueTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
             it.isInQueue()
         }
     }
@@ -192,7 +255,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 清楚所有生命周期已完结的任务，包括finish和cancel
      */
     fun removeAllLifecycleOverTasks() {
-        tasks.removeAll {
+        mTasks.removeAll {
             it.isLifecycleOver()
         }
         // Call requires API level 24
@@ -200,7 +263,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     @Throws(Exception::class)
-    private fun <T : AbstractDownloadTaskImpl> downloadWrap(task: T, event: DownloadEvent<T>? = null) {
+    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>? = null) {
         try {
             downloadCore(task, event)
         } catch (e: Exception) {
@@ -229,10 +292,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 请在子线程执行
      */
     @Throws(Exception::class)
-    private fun <T : AbstractDownloadTaskImpl> downloadCore(task: T, event: DownloadEvent<T>? = null) {
+    private fun <T : AbstractKDownloadTask> downloadCore(task: T, event: DownloadEvent<T>? = null) {
+        if (isDefault) {
+            default()
+        }
         onStartEvent(task, event)
         // todo 搜索任务栈中是否存在
 
+        // 先给启动状态，再抛出异常，状态过程才完整
         if (Looper.getMainLooper() == Looper.myLooper()) {
             // todo 到时候如果改成纯Java库就注释掉这部分
             throw KDownloadException("请在子线程下载")
@@ -257,23 +324,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             throw KDownloadException("父文件夹没有写入权限")
         }
 
-        val headRequest = Request
-            .Builder()
-            .url(task.url)
-            .head()
-            .build()
-        val responseByHead = mClient.newCall(headRequest).execute()
-        // 验证地址的连接
-        if (!responseByHead.isSuccessful) {
-            throw KDownloadException("HEAD请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
-        }
-        // 正确之后写入长度
-        task.fileLength = responseByHead.headersContentLength()
+        // 写入长度
+        task.fileLength = getContentLengthLong(task.url)
         if (task.fileLength <= 0) {
             throw KDownloadException("文件长度不正确, ContentLength=${task.fileLength}")
         }
         // 验证硬盘是否够写入
-        isStorageEnough(storageFolder, task.fileLength)
+        StorageUtil.isStorageEnough(storageFolder, task.fileLength)
 
         // 验证文件名
         if (task.name.isNullOrBlank()) {
@@ -322,14 +379,15 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             val getRequest = headRequest.newBuilder().get().build()
         }*/
         // 一条线程下载
-        val getRequest = headRequest
-            .newBuilder()
+        val getRequest = Request
+            .Builder()
+            .url(task.url)
             .get()
             .also {
-                if (task.totalDownloadedLength != 0L) {
-                    it.header("Range", "bytes=${task.totalDownloadedLength}-${task.fileLength}")
+                if (task.downloadedLength != 0L) {
+                    it.header("Range", "bytes=${task.downloadedLength}-${task.fileLength}")
                     // seek length 不需要+1
-                    writeTempFile.seek(task.totalDownloadedLength)
+                    writeTempFile.seek(task.downloadedLength)
                 }
             }
             .build()
@@ -337,7 +395,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 前面head已校验，此处不再多余校验，算了，我觉得万一有个万一呢，来个一次性校验吧
         val body = responseByGet.body
         if (!responseByGet.isSuccessful || responseByGet.headersContentLength() <= 0 || body == null) {
-            throw KDownloadException("GET请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
+            throw KDownloadException("GET请求错误, HTTP status code=${responseByGet.code}, HTTP status message=${responseByGet.message}")
         }
         task.status = Status.RUNNING
         BufferedInputStream(body.byteStream(), DEFAULT_BUFFER_SIZE).use { bis ->
@@ -346,9 +404,19 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             var readLength: Int
             var lastEventTime = 0L
             var lastEventPercentage = -1
+            var lastGroupEventPercentage = -1
             while (bis.read(byteArray).also { readLength = it } != -1) {
                 writeTempFile.write(byteArray, 0, readLength)
-                task.totalDownloadedLength += readLength
+                task.downloadedLength += readLength
+                task.group?.apply {
+                    addTotalDownloadedLength(readLength)
+                    updatePercentageProgress()
+                    // 考虑到整组的任务数据量可能很大，只按百分比输出
+                    if (lastGroupEventPercentage != percentageProgress) {
+                        lastGroupEventPercentage = percentageProgress
+                        onGroupProgressEvent(this, event as? GroupDownloadEvent<T>)
+                    }
+                }
                 task.updatePercentageProgress()
                 if ((isPercentageProgressEvent && lastEventPercentage != task.percentageProgress) || (!isPercentageProgressEvent && System.currentTimeMillis() - lastEventTime > minProgressEventInterval)) {
                     lastEventTime = System.currentTimeMillis()
@@ -370,7 +438,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             task.deleteRelatedFiles()
         } else {
             // 判断是finish还是pause todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
-            if (task.fileLength == task.totalDownloadedLength) {
+            if (task.fileLength == task.downloadedLength) {
                 if (!tempFile.renameTo(file)) {
                     throw KDownloadException("下载完成，临时文件重命名失败")
                 }
@@ -388,27 +456,71 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
     }
 
+    @Throws
+    private fun getContentLengthLong(url: String): Long {
+        val headRequest = Request
+            .Builder()
+            .url(url)
+            .head()
+            .build()
+        val responseByHead = mClient.newCall(headRequest).execute()
+        // 验证地址的连接
+        if (!responseByHead.isSuccessful) {
+            throw KDownloadException("HEAD请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
+        }
+        return responseByHead.headersContentLength()
+    }
 
-    private fun <T : AbstractDownloadTaskImpl> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
+    /**
+     * 检查整组的完成状态，fixme 关于组的操作不是很满意
+     */
+    private fun <T : AbstractKDownloadTask> checkGroupStatus(group: TaskGroup, event: DownloadEvent<T>?) {
+        var isGroupFinished = true
+        var isGroupTerminated = true
+        group.tasks.forEach {
+            // 有一个未完结
+            if (isGroupTerminated && !it.isTerminated()) {
+                isGroupTerminated = false
+            }
+            // 有一个未完成
+            if (isGroupFinished && !it.isFinished()) {
+                isGroupFinished = false
+            }
+        }
+        if (isGroupFinished) {
+            onGroupFinishEvent(group, event as? GroupDownloadEvent<T>)
+        }
+        if (isGroupTerminated) {
+            onGroupTerminateEvent(group, event as? GroupDownloadEvent<T>)
+        }
+    }
+
+    /**
+     * 任务结束后的通知，群组任务就放到单任务到终止位置检测
+     */
+    private fun <T : AbstractKDownloadTask> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
         Debug.log("${task.name} - 当前状态=${task.getStatusString()}")
         event?.terminate?.invoke()
         downloadListener?.onTerminate(task)
+        task.group?.let { group ->
+            checkGroupStatus(group, event)
+        }
     }
 
-    private fun <T : AbstractDownloadTaskImpl> onProgressEvent(task: T, event: DownloadEvent<T>?) {
+    private fun <T : AbstractKDownloadTask> onProgressEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
         Debug.log("${task.name} - ${task.percentageProgress}%")
         event?.progress?.invoke()
         downloadListener?.onProgress(task)
     }
 
-    private fun <T : AbstractDownloadTaskImpl> onFinishEvent(task: T, event: DownloadEvent<T>?) {
+    private fun <T : AbstractKDownloadTask> onFinishEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
         task.status = Status.FINISHED
         Debug.log("${task.name} - 下载完成")
         event?.finish?.invoke()
         downloadListener?.onFinish(task)
     }
 
-    private fun <T : AbstractDownloadTaskImpl> onPauseEvent(task: T, event: DownloadEvent<T>?) {
+    private fun <T : AbstractKDownloadTask> onPauseEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.PAUSED
         // 要把队列中的任务加回队列中（目前方案没有移出，依旧在队列中），todo 如果是直接异步启动的话呢？是否应该在业务中处理？
         Debug.log("${task.name} - 下载暂停")
@@ -419,7 +531,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 启动事件
      */
-    private fun <T : AbstractDownloadTaskImpl> onStartEvent(task: T, event: DownloadEvent<T>?) {
+    private fun <T : AbstractKDownloadTask> onStartEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.CONNECTING
         Debug.log("download core - name: ${task.name} url: ${task.url} path: ${task.localPath}")
         // 如果业务需要二选一，可以再加个变量控制，走了自己的回调就不走全局回调
@@ -428,27 +540,30 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         downloadListener?.onStart(task)
     }
 
-    /**
-     * 检测空间是否足够，没问题就过，有问题直接抛，方便 todo 最后抽到Util类中
-     */
-    @Throws(StorageInsufficientException::class)
-    private fun isStorageEnough(storageFolder: File, fileLength: Long) {
-        // 文件系统上可用的字节数，包括保留的块（普通应用程序不可用）。大多数应用程序将改为使用getAvailableBytes（）。
-        val statFs = StatFs(storageFolder.absolutePath)
-        var freeSpace = statFs.availableBytes
-        // val statFs = StatFs(storageFolder.absolutePath)
-        // File读取的freeSpace=12350640128, StatFs读取的freeBytes=12350640128, availableBytes=12199645184
-        // freeSpace = freeBytes，都要大于availableBytes 扩展：available < (free + cache + buffers)
-        //Debug.log("File读取的freeSpace=$freeSpace, StatFs读取的freeBytes=${statFs.freeBytes}, availableBytes=${statFs.availableBytes}")
-        if (freeSpace == 0L) {
-            freeSpace = storageFolder.usableSpace
-            Debug.log("StatFs获取失败，改用File的usableSpace获取")
-        }
-        if (freeSpace == 0L) {
-            throw StorageInsufficientException("可用空间为0", freeSpace, fileLength)
-        }
-        if (freeSpace < fileLength) {
-            throw StorageInsufficientException("可用空间不足", freeSpace, fileLength)
+
+    private fun <T : AbstractKDownloadTask> onGroupFinishEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
+        Debug.log("GroupId: ${group.groupId} - 整组下载完成")
+        event?.groupFinish?.invoke()
+        (downloadListener as? IGroupDownloadListener)?.onGroupFinish(group)
+    }
+
+    private fun <T : AbstractKDownloadTask> onGroupTerminateEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
+        Debug.log("GroupId: ${group.groupId} - 整组下载结束")
+        event?.groupTerminate?.invoke()
+        (downloadListener as? IGroupDownloadListener)?.onGroupTerminate(group)
+    }
+
+    private fun <T : AbstractKDownloadTask> onGroupProgressEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
+        Debug.log("GroupId: ${group.groupId} - 整组下载进度: ${group.percentageProgress}%")
+        event?.groupProgress?.invoke()
+        (downloadListener as? IGroupDownloadListener)?.onGroupProgress(group)
+    }
+
+    /** 设为默认下载，没有反选，暂时想不到有反选的需求的场景 */
+    fun default() {
+        isDefault = true
+        if (mDefaultKDownloader != this) {
+            mDefaultKDownloader = this
         }
     }
 }

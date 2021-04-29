@@ -3,18 +3,18 @@ package io.keyss.library.kdownloader.core
 /**
  * @author Key
  * Time: 2021/04/26 17:42
- * Description:
+ * Description: 之前设计有误，去掉范型，因为是单管理器，多任务类型，所以势必是不需要范型，而是需要类型判断的，因为可能接收到任何类型的任务
  */
-interface IDownloadListener<T : AbstractDownloadTaskImpl> {
-    fun onFail(task: T, e: Exception)
+interface IDownloadListener {
+    fun onFail(task: AbstractKDownloadTask, e: Exception)
 
-    fun onTerminate(task: T)
+    fun onTerminate(task: AbstractKDownloadTask)
 
-    fun onStart(task: T)
+    fun onStart(task: AbstractKDownloadTask)
 
-    fun onPause(task: T)
+    fun onPause(task: AbstractKDownloadTask)
 
-    fun onFinish(task: T)
+    fun onFinish(task: AbstractKDownloadTask)
 
-    fun onProgress(task: T)
+    fun onProgress(task: AbstractKDownloadTask)
 }

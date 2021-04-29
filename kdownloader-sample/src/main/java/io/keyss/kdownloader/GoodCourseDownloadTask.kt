@@ -1,6 +1,6 @@
 package io.keyss.kdownloader
 
-import io.keyss.library.kdownloader.core.AbstractDownloadTaskImpl
+import io.keyss.library.kdownloader.core.AbstractKDownloadTask
 
 /**
  * @author Key
@@ -12,7 +12,4 @@ class GoodCourseDownloadTask(
     val resourceId: Int,
     val resourceType: @ResourceType Int,
     val version: Int,
-) :
-    AbstractDownloadTaskImpl(id, url, localPath, name, isDeleteExist) {
-
-}
+) : AbstractKDownloadTask(id, url, localPath, name, isDeleteExist)
