@@ -27,7 +27,7 @@
 
    > 多线程，写成同步执行的话，用LiveData压缩成一个？
 
-4. 临时配置文件的存储方案：待定
+4. 临时配置文件BreakpointInfo的存储方案：待定
 
 ## Summary
 
@@ -50,8 +50,53 @@
 ## 使用文档
 
 * 队列下载方式
+
+  ```kotlin
+  LifecycleKDownloader.addTaskAndStart(task1)
+  LifecycleKDownloader.addTask(task2)
+  LifecycleKDownloader.startTaskQueue()
+  ```
+
 * 同步下载
+
+  ```kotlin
+  lifecycleScope.launch(Dispatchers.IO) {
+      try {
+          LifecycleKDownloader.syncDownloadTask(task1)
+          // 下载完成的处理，成功执行之后一定存在name
+          val file = File(task1.localPath, task1.name!!)
+          file.delete()
+      } catch (e: Exception) {
+          e.printStackTrace()
+          // 错误处理
+      }
+  }
+  ```
+
 * 异步下载
+
+  ```kotlin
+  lifecycleScope.download(task2) {
+      onTerminate {
+          println("download - onTerminate")
+      }
+      onStart {
+          println("download - onStart, ${Thread.currentThread().name}")
+      }
+      onFail {
+          println("download - onFail, e=$it")
+      }
+      onPause {
+          println("download - onPause")
+      }
+      onProgress {
+          println("download - onProgress - ${task.percentageProgress}")
+      }
+      onFinish {
+          println("download - onFinish")
+      }
+  }
+  ```
 
 ## 开发中的一些自我矛盾点以及最后的解决方式
 
@@ -59,3 +104,6 @@
 
 1. 因为设计来优先级这个概念，所以在单任务暂停的时候，出现了一个问题，队列中优先级最高的任务，被手动暂停后，再次开启队列（获取优先级最高的任务）还是这个任务？所以这个优先级的原则应该是要不要排除手动暂停的方式呢？这样的话难道优先级最高的反而要去队尾？这不科学
    - 所以最终我决定去掉单任务暂停，单个任务只留下取消的操作，暂停只能全部暂停
+2. 这个`DownloadTask`每一次继承都要写很多构造参数，太不方便了。改
+3. 整组的概念定义：怎么样算整组完成，状态需要全部finished还是包括了failed
+

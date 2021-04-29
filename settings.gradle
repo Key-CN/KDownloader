@@ -7,5 +7,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "KDownloader"
-include ':app'
+include ':kdownloader-sample'
 include ':library-kdownloader'
