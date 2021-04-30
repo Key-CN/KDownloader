@@ -46,11 +46,12 @@ fun <T : AbstractKDownloadTask> CoroutineScope.download(
 /**
  * fixme 想不到好的去掉！！的方案
  */
-suspend fun <T : AbstractKDownloadTask> T.sync(): T = apply {
+@Throws(Exception::class)
+suspend fun <T : AbstractKDownloadTask> T.syncDownload(): T = apply {
     mDefaultKDownloader!!.syncDownloadTask(this)
 }
 
-fun <T : AbstractKDownloadTask> T.async(event: DownloadEvent<AbstractKDownloadTask>) {
+fun <T : AbstractKDownloadTask> T.asyncDownload(event: DownloadEvent<T>) {
     mDefaultKDownloader!!.asyncDownloadTask(this, event)
 }
 

@@ -5,8 +5,10 @@ import io.keyss.library.kdownloader.config.KDownloadException
 import io.keyss.library.kdownloader.config.PersistenceType
 import io.keyss.library.kdownloader.config.Status
 import io.keyss.library.kdownloader.utils.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.internal.closeQuietly
@@ -105,6 +107,35 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         this.mClient = client
     }
 
+    fun getRunningTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
+            it.isStarting()
+        }
+    }
+
+    fun getWaitingTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
+            it.isWaiting()
+        }.sortedByDescending { it.priority }
+    }
+
+    fun getInQueueTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
+            it.isInQueue()
+        }
+    }
+
+    /**
+     * 清楚所有生命周期已完结的任务，包括finish和cancel
+     */
+    fun removeAllLifecycleOverTasks() {
+        mTasks.removeAll {
+            it.isLifecycleOver()
+        }
+        // Call requires API level 24
+        // tasks.removeIf
+    }
+
     fun startTaskQueue() {
         // 如果正在运行中返回，也可以执行，如果有空位置则补进去
         /*if () {
@@ -125,13 +156,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         repeat(remainingSize) { index ->
             waitingTasks.getOrNull(index)?.let { task ->
                 // 基类没有绑定生命周期，设定也是全局可用
-                GlobalScope.launch {
-                    try {
-                        downloadWrap(task)
-                    } catch (e: Exception) {
-                        //e.printStackTrace()
-                    }
-                }
+                asyncDownloadWrap(task)
             }
         }
     }
@@ -211,7 +236,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 添加任务组并启动
      */
-    fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T):Boolean {
+    fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T): Boolean {
         val addTaskGroup = addTaskGroup(taskGroup)
         Debug.log("添加任务组并启动，添加=$addTaskGroup")
         startTaskQueue()
@@ -228,64 +253,42 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     /**
-     * 其实没有用到suspend，只是为了防止在主线程调用，同步的方案是设计给在协程中等待返回的
+     * 已切换线程，可直接再Main中挂起调用
      */
     @Throws(Exception::class)
     suspend fun <T : AbstractKDownloadTask> syncDownloadTask(task: T): T = task.apply {
-        downloadWrap(this)
+        withContext(Dispatchers.IO) {
+            downloadWrap(this@apply, null, true)
+        }
     }
 
     /**
-     * 异步单任务，直接启动型，跳过队列
+     * 异步单任务，直接启动型，跳过队列，异步任务不抛异常
      */
-    @Throws(Exception::class)
     fun <T : AbstractKDownloadTask> asyncDownloadTask(task: T, event: DownloadEvent<T>) {
-        downloadWrap(task, event)
+        // 内部不实用扩展方法，因为扩展方法是使用默认下载器，也许调用者此次是使用了其他的下载器
+        //task.async(event)
+        asyncDownloadWrap(task, event)
     }
 
-    fun getRunningTasks(): List<AbstractKDownloadTask> {
-        return mTasks.filter {
-            it.isStarting()
+    private fun <T : AbstractKDownloadTask> asyncDownloadWrap(task: T, event: DownloadEvent<T>? = null) {
+        GlobalScope.launch(Dispatchers.IO) {
+            downloadWrap(task, event, false)
         }
-    }
-
-    fun getWaitingTasks(): List<AbstractKDownloadTask> {
-        return mTasks.filter {
-            it.isWaiting()
-        }.sortedByDescending { it.priority }
-    }
-
-    fun getInQueueTasks(): List<AbstractKDownloadTask> {
-        return mTasks.filter {
-            it.isInQueue()
-        }
-    }
-
-    /**
-     * 清楚所有生命周期已完结的任务，包括finish和cancel
-     */
-    fun removeAllLifecycleOverTasks() {
-        mTasks.removeAll {
-            it.isLifecycleOver()
-        }
-        // Call requires API level 24
-        // tasks.removeIf
     }
 
     @Throws(Exception::class)
-    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>? = null) {
+    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>? = null, isThrowOut: Boolean) {
         try {
             downloadCore(task, event)
         } catch (e: Exception) {
-            e.printStackTrace()
-            task.status = Status.FAILED
-            downloadListener?.onFail(task, e)
-            if (event?.fail != null) {
-                event.fail!!.invoke(e)
-            } else {
-                // 如果不采用回调方式则继续往外抛，总之要丢给业务层去处理
-                // 关于重试，自动重试还是业务层去重试，非网络原因的可以直接重试，网络原因的可以抛给业务层
-                // 网络没连接UnknownHostException，超时SocketTimeout
+            onFailedEvent(task, e, event)
+            // 关于重试，自动重试还是业务层去重试？最终方案，不应在逻辑层直接重试，但可以设定重试的条件，相当于还是由业务层来管理
+            // todo 如果有自动重试，是不是要再加一个重试的event？
+            // 最终觉得采用多加一个参数来简化，少包一层try catch，只有同步模式才抛到外面
+            // 如果不采用回调方式则继续往外抛，总之要丢给业务层去处理
+            // 网络没连接UnknownHostException，超时SocketTimeout
+            if (isThrowOut) {
                 throw e
             }
         } finally {
@@ -473,6 +476,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             .url(url)
             .head()
             .build()
+        // @Throws(IOException::class)
         val responseByHead = mClient.newCall(headRequest).execute()
         // 验证地址的连接
         if (!responseByHead.isSuccessful) {
@@ -550,6 +554,15 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         downloadListener?.onStart(task)
     }
 
+    /**
+     * 失败的事件，这里很复杂，能否重试完全依赖于是因为什么错误
+     */
+    private fun <T : AbstractKDownloadTask> onFailedEvent(task: T, e: Exception, event: DownloadEvent<T>?) {
+        task.status = Status.FAILED
+        e.printStackTrace()
+        downloadListener?.onFail(task, e)
+        event?.fail!!.invoke(e)
+    }
 
     private fun <T : AbstractKDownloadTask> onGroupFinishEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
         Debug.log("GroupId: ${group.groupId} - 整组下载完成")
