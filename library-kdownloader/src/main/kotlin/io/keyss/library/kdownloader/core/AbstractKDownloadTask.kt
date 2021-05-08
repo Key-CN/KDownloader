@@ -20,10 +20,13 @@ abstract class AbstractKDownloadTask(
     val localPath: String,
     var name: String? = null,
     val isDeleteExist: Boolean = true,
+    /** 方便debug识别任务组，或用于UI展示 */
+    var markName: String = ""
 ) {
     /** 任务状态 */
     internal var status: @Status Int = Status.CREATED
 
+    // todo 改成分开的三个
     val relatedFiles: CopyOnWriteArrayList<File> = CopyOnWriteArrayList()
 
     /** 文件长度 */
@@ -32,8 +35,8 @@ abstract class AbstractKDownloadTask(
     /** 重试次数 */
     var retryTimes = 0
 
-    /** 剩余重试次数 */
-    var remainingRetryTimes = 20
+    /** 剩余自动重试的次数 */
+    private var remainingAutoRetryTimes = 3
 
     /** 任务的总下载量，用以统计进度，而非每条线程的下载量或所下载到的Index */
     var downloadedLength: Long = 0
@@ -88,12 +91,36 @@ abstract class AbstractKDownloadTask(
     }
 
     /**
+     * 如果失败了。可以自动重试
+     */
+    private fun autoRetry(): Boolean {
+        val canRetry = isFailed() && remainingAutoRetryTimes > 0
+        Debug.log("自动重试, canRetry=${canRetry}, 剩余次数=$remainingAutoRetryTimes")
+        if (canRetry) {
+            remainingAutoRetryTimes--
+            status = Status.PAUSED
+        }
+        return canRetry
+    }
+
+    /**
      * 暂停任务，给外部调用，决定关闭此功能，具体可以看ReadMe矛盾点第一点
      * 2021/4/28 单任务执行方式其实可以暂停，不冲突，但是都只能靠提前引用task，才能在需要的地方进行暂停
      */
     @Deprecated("只是为了留下存在过的证明", ReplaceWith("cancel()"), DeprecationLevel.ERROR)
     fun pause() {
         status = Status.PAUSED
+    }
+
+    /**
+     * 挂起，不会被自动启动
+     */
+    fun suspend() {
+        status = Status.SUSPEND
+    }
+
+    fun isSuspend(): Boolean {
+        return compareStatus(Status.SUSPEND)
     }
 
     fun isPause(): Boolean {
@@ -114,6 +141,16 @@ abstract class AbstractKDownloadTask(
         }
     }
 
+    /**
+     * 仅删除临时文件
+     */
+    fun deleteTempFiles(): Unit {
+
+    }
+
+    /**
+     * 删除相关的所有文件
+     */
     fun deleteRelatedFiles() {
         relatedFiles.forEach {
             val delete = it.delete()
@@ -123,7 +160,7 @@ abstract class AbstractKDownloadTask(
     }
 
     /**
-     * 完成、失败、取消，这三种状态为结束。剩余的四种都是未结束：创建未启动，连接中，下载中，已暂停
+     * 完成、失败、取消，这三种状态为结束。
      */
     fun isTerminated(): Boolean {
         return compareStatus(Status.FINISHED) || compareStatus(Status.FAILED) || compareStatus(Status.CANCEL)
@@ -131,6 +168,20 @@ abstract class AbstractKDownloadTask(
 
     fun isFailed(): Boolean {
         return compareStatus(Status.FAILED)
+    }
+
+    /**
+     * 任务报错了，失败了
+     * @return 是否失败了
+     */
+    fun failed(e: Exception): Boolean {
+        e.printStackTrace()
+        val isRetry = autoRetry()
+        // 不能自动重试则为失败
+        if (!isRetry) {
+            status = Status.FAILED
+        }
+        return !isRetry
     }
 
     fun isFinished(): Boolean {
@@ -154,7 +205,7 @@ abstract class AbstractKDownloadTask(
     }
 
     /**
-     * 生命周期结束包含：已完成、已取消
+     * 生命周期结束包含：已完成、已取消。也就是任务将不再被执行
      */
     fun isLifecycleOver(): Boolean {
         return isCancel() || isFinished()
@@ -167,43 +218,23 @@ abstract class AbstractKDownloadTask(
     override fun equals(other: Any?): Boolean {
         return if (other is AbstractKDownloadTask) {
             //id相同 或者  url，存储路径，存储名字，三者相同才视为同一对象
+            // FIXME: 2021/4/30 ID字段待修改
             id == other.id || (url == other.url && localPath == other.localPath && name == other.name)
         } else {
             false
         }
     }
 
-    fun getStatusString(): String {
-        return when (status) {
-            Status.CREATED -> {
-                "已创建（未启动过）"
-            }
-            Status.CONNECTING -> {
-                "连接中"
-            }
-            Status.RUNNING -> {
-                "下载中"
-            }
-            Status.PAUSED -> {
-                "已暂停"
-            }
-            Status.FINISHED -> {
-                "已完成"
-            }
-            Status.CANCEL -> {
-                "取消"
-            }
-            Status.FAILED -> {
-                "失败（报错）"
-            }
-            else -> "未知"
-        }
-    }
+    /**
+     * 获取状态的中文名
+     */
+    fun getStatusText(): String = Status.getStatusText(status)
 
     abstract class Builder<T : AbstractKDownloadTask> {
         protected var id: Int = 0
         protected lateinit var url: String
         protected var localPath: String = ""
+        protected var markName: String = ""
         protected var name: String? = null
         protected var isDeleteExist: Boolean = true
         protected var priority: Int = 0
@@ -219,6 +250,10 @@ abstract class AbstractKDownloadTask(
 
         fun localPath(localPath: String) = apply {
             this.localPath = localPath
+        }
+
+        fun markName(markName: String) = apply {
+            this.markName = markName
         }
 
         fun name(name: String) = apply {

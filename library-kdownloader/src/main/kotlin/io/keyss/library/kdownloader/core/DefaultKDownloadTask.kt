@@ -22,6 +22,7 @@ class DefaultKDownloadTask(
             return DefaultKDownloadTask(id, url, localPath, name, isDeleteExist).apply {
                 this.priority = this@Builder.priority
                 this.maxConnections = this@Builder.maxConnections
+                this.markName = this@Builder.markName
             }
         }
     }

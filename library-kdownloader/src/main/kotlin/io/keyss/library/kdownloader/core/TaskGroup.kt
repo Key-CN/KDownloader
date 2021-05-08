@@ -8,6 +8,8 @@ package io.keyss.library.kdownloader.core
 open class TaskGroup(
     val groupId: Int,
     val tasks: Collection<AbstractKDownloadTask>,
+    /** 方便debug识别任务组，或用于UI展示 */
+    var markName: String = ""
 ) {
     var totalLength: Long = 0
         private set

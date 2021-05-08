@@ -1,12 +1,11 @@
 package io.keyss.library.kdownloader
 
-import androidx.test.platform.app.InstrumentationRegistry
+import android.icu.util.Calendar
 import androidx.test.ext.junit.runners.AndroidJUnit4
-
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
-
-import org.junit.Assert.*
 
 /**
  * Instrumented test, which will execute on an Android device.
@@ -20,5 +19,11 @@ class ExampleInstrumentedTest {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("io.keyss.library.kdownloader.test", appContext.packageName)
+    }
+
+    @Test
+    fun envTest() {
+        println("android YEAR=${Calendar.getInstance()[Calendar.YEAR]}")
+        println("java YEAR=${java.util.Calendar.getInstance()[Calendar.YEAR]}")
     }
 }

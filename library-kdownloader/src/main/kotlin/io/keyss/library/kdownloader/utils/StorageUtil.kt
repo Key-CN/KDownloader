@@ -11,6 +11,7 @@ import java.io.File
  */
 object StorageUtil {
 
+    @JvmStatic
     fun getAvailableBytes(path: File): Long {
         // 文件系统上可用的字节数，包括保留的块（普通应用程序不可用）。大多数应用程序将改为使用getAvailableBytes（）。
         val statFs = StatFs(path.absolutePath)
@@ -30,6 +31,7 @@ object StorageUtil {
      * 检测空间是否足够，没问题就过，有问题直接抛，方便 todo 最后抽到Util类中
      */
     @Throws(StorageInsufficientException::class)
+    @JvmStatic
     fun isStorageEnough(path: File, fileLength: Long) {
         val freeSpace = getAvailableBytes(path)
         if (freeSpace == 0L) {

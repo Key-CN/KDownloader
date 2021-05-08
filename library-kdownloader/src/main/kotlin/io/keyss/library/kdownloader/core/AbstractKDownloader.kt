@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Description: 不在类上写范型是为了方便使用，在一些需要自定义类型，但是只是简单下载的场景。同时可以使用多种任务类型（Task的实现）来区分业务。
  */
 abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = PersistenceType.MEMORY_CACHE) {
+    // todo 把这个改成一个配置类的方式，用户可以自己实现具体的参数
     companion object {
         private const val TAG = "KDownloader"
         private const val TEMP_FILE_SUFFIX = ".kd"
@@ -134,6 +135,25 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
         // Call requires API level 24
         // tasks.removeIf
+    }
+
+    /**
+     * 移出不会删除任务文件，包括临时文件，会留下垃圾
+     */
+    fun <T : AbstractKDownloadTask> removeTask(vararg tasks: T) {
+        for (task in tasks) {
+            if (task.isStarting()) {
+                task.suspend()
+            }
+            mTasks.remove(task)
+        }
+    }
+
+    fun <T : AbstractKDownloadTask> cancelTask(vararg tasks: T) {
+        for (task in tasks) {
+            task.cancel()
+            mTasks.remove(task)
+        }
     }
 
     fun startTaskQueue() {
@@ -292,6 +312,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 throw e
             }
         } finally {
+            // onTerminate 应该是流程结束的必走，类似于菊花消失的场景，至于是什么情况走到这里的，应该再自主判断状态
             onTerminateEvent(task, event)
             if (!isPause) {
                 // 继续下载下一个
@@ -436,8 +457,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                     lastEventPercentage = task.percentageProgress
                     onProgressEvent(task, event)
                 }
-                if (isPause || task.isPause() || task.isCancel()) {
-                    Debug.log("${task.name} - 任务被暂停, All=${isPause}, Self=${task.isPause()}, cancel=${task.isCancel()}")
+                if (isPause || task.isSuspend() || task.isCancel()) {
+                    Debug.log("${task.name} - 任务被暂停, All=${isPause}, Self Suspend=${task.isSuspend()}, cancel=${task.isCancel()}")
                     break
                 }
             }
@@ -513,7 +534,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 任务结束后的通知，群组任务就放到单任务到终止位置检测
      */
     private fun <T : AbstractKDownloadTask> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
-        Debug.log("${task.name} - 当前状态=${task.getStatusString()}")
+        Debug.log("${task.name} - 当前状态=${task.getStatusText()}")
         event?.terminate?.invoke()
         downloadListener?.onTerminate(task)
         task.group?.let { group ->
@@ -558,10 +579,11 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 失败的事件，这里很复杂，能否重试完全依赖于是因为什么错误
      */
     private fun <T : AbstractKDownloadTask> onFailedEvent(task: T, e: Exception, event: DownloadEvent<T>?) {
-        task.status = Status.FAILED
-        e.printStackTrace()
-        downloadListener?.onFail(task, e)
-        event?.fail!!.invoke(e)
+        // failed()内部处理状态和重试，然后event完了刚好进到finally进行重试，这一系列流程是连贯的，修改时要注意！！
+        if (task.failed(e)) {
+            downloadListener?.onFail(task, e)
+            event?.fail!!.invoke(e)
+        }
     }
 
     private fun <T : AbstractKDownloadTask> onGroupFinishEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {

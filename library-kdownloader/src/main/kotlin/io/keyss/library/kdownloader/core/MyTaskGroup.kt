@@ -5,6 +5,6 @@ package io.keyss.library.kdownloader.core
  * Time: 2021/04/29 16:52
  * Description:
  */
-class MyTaskGroup(groupId: Int, tasks: Collection<AbstractKDownloadTask>, val markName:String) : TaskGroup(groupId, tasks){
+class MyTaskGroup(groupId: Int, tasks: Collection<AbstractKDownloadTask>, markName: String) : TaskGroup(groupId, tasks, markName) {
 
 }
