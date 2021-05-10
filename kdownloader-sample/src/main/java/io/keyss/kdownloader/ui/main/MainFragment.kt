@@ -99,12 +99,12 @@ class MainFragment : Fragment() {
             task2.cancel()
         }
         lifecycleScope.launchWhenResumed {
-//            doDownload()
+            doDownload()
         }
         //callback()
-        lifecycleScope.launch(Dispatchers.IO) {
+        /*lifecycleScope.launch(Dispatchers.IO) {
             startGroup()
-        }
+        }*/
     }
 
     fun startGroup(): Unit {
@@ -117,7 +117,7 @@ class MainFragment : Fragment() {
         lifecycleScope.launch(Dispatchers.IO) {
             delay(1_000)
             //LifecycleKDownloader.syncDownloadTask(task1)
-            //LifecycleKDownloader.addTaskAndStart(task1)
+            LifecycleKDownloader.addTaskAndStart(task1)
             //LifecycleKDownloader.addTaskAndStart(task2)
             /*LifecycleKDownloader.addTask(task1)
             LifecycleKDownloader.addTask(task2)

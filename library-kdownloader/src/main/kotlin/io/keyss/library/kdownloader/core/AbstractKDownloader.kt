@@ -43,6 +43,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 整个下载器的状态，默认就是运行状态。
      */
+    @Volatile
     private var isPause = false
 
     /**是否为默认下载器*/
@@ -207,7 +208,10 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     fun <T : AbstractKDownloadTask> addTaskAndStart(task: T): Boolean {
         val addIfAbsent = addTask(task)
         Debug.log("添加任务并启动，添加=$addIfAbsent")
-        startTaskQueue()
+        // 暂停的情况下才启动，否则有add启动
+        if (isPause) {
+            startTaskQueue()
+        }
         return addIfAbsent
     }
 
@@ -259,17 +263,22 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T): Boolean {
         val addTaskGroup = addTaskGroup(taskGroup)
         Debug.log("添加任务组并启动，添加=$addTaskGroup")
-        startTaskQueue()
+        if (isPause) {
+            startTaskQueue()
+        }
         return addTaskGroup
     }
 
     /**
      * 添加任务组并启动
      */
-    fun <T : AbstractKDownloadTask> createTaskGroupAndStart(tasks: Collection<T>) {
+    fun <T : AbstractKDownloadTask> createTaskGroupAndStart(tasks: Collection<T>): Boolean {
         val addTaskGroup = createTaskGroup(tasks)
         Debug.log("创建任务组并启动，添加=$addTaskGroup")
-        startTaskQueue()
+        if (isPause) {
+            startTaskQueue()
+        }
+        return addTaskGroup
     }
 
     /**
@@ -332,6 +341,12 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
         onStartEvent(task, event)
         // todo 搜索任务栈中是否存在
+        // 1。 直接下载，但这个任务和任务栈中的某个任务完全相同？
+        // 2。 添加。是添加不进，在add的地方已经被过滤掉了
+        /*if (mTasks.contains(task)) {
+            mTasks.getOrNull(task)
+            if ()
+        }*/
 
         // 先给启动状态，再抛出异常，状态过程才完整
         if (Looper.getMainLooper() == Looper.myLooper()) {
@@ -425,7 +440,11 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 }
             }
             .build()
+        Debug.log("getRequest已构建：headers=${getRequest.headers}")
         val responseByGet = mClient.newCall(getRequest).execute()
+        // todo 验证是否支持，Range是在HTTP/1.1中新增的请求头，如果Server端支持Range，会在响应头中添加Accept-Range: bytes；否则，会返回 Accept-Range: none
+        //val isAcceptRanges = responseByGet.header("Accept-Ranges", "none")
+        //Debug.log("getRequest已返回：http code=${responseByGet.code}, headers=${responseByGet.headers}")
         // 前面head已校验，此处不再多余校验，算了，我觉得万一有个万一呢，来个一次性校验吧
         val body = responseByGet.body
         if (!responseByGet.isSuccessful || responseByGet.headersContentLength() <= 0 || body == null) {

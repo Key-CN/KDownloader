@@ -1,5 +1,6 @@
 package io.keyss.library.kdownloader.utils
 
+import android.util.Log
 import io.keyss.library.kdownloader.BuildConfig
 
 /**
@@ -36,7 +37,10 @@ object Debug {
         {
             val thread = Thread.currentThread()
             val stackTraceElement: StackTraceElement = thread.stackTrace[4]
-            println("Thread: ${thread.name}  | Method: ${stackTraceElement.methodName}(${stackTraceElement.fileName}:${stackTraceElement.lineNumber}) | $it")
+            Log.i(
+                "KDownloaderLog",
+                "Thread: ${thread.name}  | Method: ${stackTraceElement.methodName}(${stackTraceElement.fileName}:${stackTraceElement.lineNumber}) | $it"
+            )
         }
     } else {
         {
