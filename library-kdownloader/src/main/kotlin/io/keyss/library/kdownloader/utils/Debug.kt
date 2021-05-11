@@ -38,7 +38,7 @@ object Debug {
             val thread = Thread.currentThread()
             val stackTraceElement: StackTraceElement = thread.stackTrace[4]
             Log.i(
-                "KDownloaderLog",
+                "KDownloaderDebugLog",
                 "Thread: ${thread.name}  | Method: ${stackTraceElement.methodName}(${stackTraceElement.fileName}:${stackTraceElement.lineNumber}) | $it"
             )
         }

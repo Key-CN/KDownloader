@@ -8,7 +8,7 @@ import io.keyss.library.kdownloader.core.IDownloadListener
  * Time: 2021/04/27 17:09
  * Description:
  */
-object DownloadListenerImpl : IDownloadListener {
+object SampleDownloadListenerImpl : IDownloadListener {
     override fun onFail(task: AbstractKDownloadTask, e: Exception) {
     }
 

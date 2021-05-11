@@ -1,6 +1,7 @@
 package io.keyss.library.kdownloader.core
 
 import android.os.Looper
+import android.util.Log
 import io.keyss.library.kdownloader.config.KDownloadException
 import io.keyss.library.kdownloader.config.PersistenceType
 import io.keyss.library.kdownloader.config.Status
@@ -11,8 +12,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.internal.closeQuietly
-import okhttp3.internal.headersContentLength
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.RandomAccessFile
@@ -224,10 +225,21 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             return false
         }
 
+        // 重复任务怎么办？因为已整组为单位，所以一个重复则视为失败，todo 还需要考虑一下
+        for (task in mTasks) {
+            for (newTask in tasks) {
+                // 不删除已存在 并且 老任务已经完成 并且 URL、存储路径、name相同
+                if (!newTask.isDeleteExist && task.isFinished() && newTask == task) {
+                    Log.w(TAG, "$newTask - createTaskGroup: 该任务已存在，取消下载整组任务")
+                    return false
+                }
+            }
+        }
+
         val taskGroup = TaskGroup(tasks.hashCode(), tasks)
         tasks.forEach {
             // 相当于顺便检查正确性
-            taskGroup.addTotalLength(getContentLengthLong(it.url))
+            taskGroup.addTotalLength(getContentLengthLongOrNull(it.url) ?: 0)
             it.group = taskGroup
         }
         // 开始下载
@@ -238,15 +250,30 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         return addAllSuccessful
     }
 
-    @Throws(Exception::class)
+    /**
+     * 新增一个任务组
+     */
     fun <T : TaskGroup> addTaskGroup(taskGroup: T): Boolean {
         if (taskGroup.tasks.isEmpty()) {
             return false
         }
-
+        // 去重
+        for (task in mTasks) {
+            if (task.group?.groupId == taskGroup.groupId) {
+                Log.w(TAG, "${taskGroup.groupId} - addTaskGroup: 该任务组ID已存在，取消下载整组任务")
+                return false
+            }
+        }
+        // fixme 线程的处理，获取长度在子线程
         taskGroup.tasks.forEach {
             // 相当于顺便检查正确性
-            taskGroup.addTotalLength(getContentLengthLong(it.url))
+            taskGroup.addTotalLength(
+                try {
+                    getContentLengthLongOrNull(it.url) ?: 0
+                } catch (e: Exception) {
+                    0
+                }
+            )
             it.group = taskGroup
         }
         // 开始下载
@@ -336,10 +363,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     @Throws(Exception::class)
     private fun <T : AbstractKDownloadTask> downloadCore(task: T, event: DownloadEvent<T>? = null) {
+        // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
         if (isDefault) {
-            default()
+            setDefault()
         }
+        // 启动在最前方，必然要走，例如弹出dialog子类的
         onStartEvent(task, event)
+        // 先给启动状态，再抛出异常，状态过程才完整
+        if (Looper.getMainLooper() == Looper.myLooper()) {
+            // todo 到时候如果改成纯Java库就注释掉这部分
+            throw KDownloadException("请在子线程下载")
+        }
         // todo 搜索任务栈中是否存在
         // 1。 直接下载，但这个任务和任务栈中的某个任务完全相同？
         // 2。 添加。是添加不进，在add的地方已经被过滤掉了
@@ -347,18 +381,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             mTasks.getOrNull(task)
             if ()
         }*/
-
-        // 先给启动状态，再抛出异常，状态过程才完整
-        if (Looper.getMainLooper() == Looper.myLooper()) {
-            // todo 到时候如果改成纯Java库就注释掉这部分
-            throw KDownloadException("请在子线程下载")
-        }
-        // 校验URL的正确性
-        if (!task.url.startsWith("http")) {
-            // 报错，或者直接加个http
-            throw KDownloadException("下载地址不正确, URL=[${task.url}]")
-        }
-        // 验证路径的可用性
+        // 验证路径的可用性。首先校验本地
         val storageFolder = File(task.localPath)
         if (storageFolder.exists()) {
             if (!storageFolder.isDirectory) {
@@ -373,13 +396,18 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             throw KDownloadException("父文件夹没有写入权限")
         }
 
-        // 写入长度
-        task.fileLength = getContentLengthLong(task.url)
-        if (task.fileLength <= 0) {
-            throw KDownloadException("文件长度不正确, ContentLength=${task.fileLength}")
+        // 校验URL的正确性。然后校验的是网络
+        if (!task.url.startsWith("http")) {
+            // 报错，或者直接加个http
+            throw KDownloadException("下载地址不正确, URL=[${task.url}]")
         }
+
+        // 写入长度，以及判断是否足够写入。最后相当于组合校验
+        //task.fileLength = getContentLengthLongOrNull(task.url)
+        checkContentLengthAndBreakpointSupport(task)
+        // ContentLength 有可能会不存在，取消校验
         // 验证硬盘是否够写入
-        StorageUtil.isStorageEnough(storageFolder, task.fileLength)
+        StorageUtil.isStorageEnough(storageFolder, task.fileLength ?: 0)
 
         // 验证文件名
         if (task.name.isNullOrBlank()) {
@@ -390,7 +418,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             //task.name = UUID.randomUUID().toString()
             task.name = MD5Util.stringToMD5(task.url)
         }
-        Debug.log("${task.name} - length=${task.fileLength}")
+        Debug.log("${task.name} - length=${task.fileLength}, 是否支持断点续传=${task.isSupportBreakpoint}")
+
         val file = File(storageFolder, task.name!!)
         // 先检测本地文件
         if (file.exists()) {
@@ -420,7 +449,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 且存在内存占用和文件关闭等不确定问题。被 MappedByteBuffer 打开的文件只有在垃圾收集时才会被关闭，而这个点是不确定的。javadoc 里是这么说的：
         // A mapped byte buffer and the file mapping that it represents remain valid until the buffer itself is garbage-collected. ——JavaDoc
         val writeTempFile = RandomAccessFile(tempFile, "rw")
-        writeTempFile.setLength(task.fileLength)
+        if (task.fileLength != null) {
+            writeTempFile.setLength(task.fileLength!!)
+        }
         // 到这里才创建出file
         task.relatedFiles.addIfAbsent(tempFile)
         // 需要校验写了多少了
@@ -433,10 +464,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             .url(task.url)
             .get()
             .also {
-                if (task.downloadedLength != 0L) {
-                    it.header("Range", "bytes=${task.downloadedLength}-${task.fileLength}")
-                    // seek length 不需要+1
-                    writeTempFile.seek(task.downloadedLength)
+                if (task.downloadedLength != 0L && task.fileLength != null) {
+                    if (task.downloadedLength < task.fileLength!!) {
+                        it.header("Range", "bytes=${task.downloadedLength}-${task.fileLength!!}")
+                        // seek length 不需要-1
+                        writeTempFile.seek(task.downloadedLength)
+                    } else if (task.downloadedLength == task.fileLength!!) {
+                        // 已下完 todo 好像不用处理
+                    } else {
+                        task.downloadedLength = 0
+                        writeTempFile.seek(0)
+                    }
                 }
             }
             .build()
@@ -447,10 +485,15 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         //Debug.log("getRequest已返回：http code=${responseByGet.code}, headers=${responseByGet.headers}")
         // 前面head已校验，此处不再多余校验，算了，我觉得万一有个万一呢，来个一次性校验吧
         val body = responseByGet.body
-        if (!responseByGet.isSuccessful || responseByGet.headersContentLength() <= 0 || body == null) {
-            throw KDownloadException("GET请求错误, HTTP status code=${responseByGet.code}, HTTP status message=${responseByGet.message}")
+        if (!responseByGet.isSuccessful) {
+            throw KDownloadException("GET请求错误, HTTP status code=${responseByGet.code}, HTTP status message=${responseByGet.message}, ContentLength=${responseByGet.getContentLengthOrNull()}")
+        }
+        if (body == null) {
+            throw KDownloadException("GET请求body为null, HTTP status code=${responseByGet.code}, HTTP status message=${responseByGet.message}, ContentLength=${responseByGet.getContentLengthOrNull()}")
         }
         task.status = Status.RUNNING
+        // 非正常走完
+        var notFinished = false
         BufferedInputStream(body.byteStream(), DEFAULT_BUFFER_SIZE).use { bis ->
             // 假设一次32K，如果1MB刷新一次，则32次刷新一次，或者再加一个时间纬度可能更好，1秒一次，如果下载速度1秒钟10MB，则一秒钟刷新320次
             val byteArray = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -461,6 +504,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             while (bis.read(byteArray).also { readLength = it } != -1) {
                 writeTempFile.write(byteArray, 0, readLength)
                 task.downloadedLength += readLength
+                task.updatePercentageProgress()
                 task.group?.apply {
                     addTotalDownloadedLength(readLength)
                     updatePercentageProgress()
@@ -470,13 +514,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                         onGroupProgressEvent(this, event as? GroupDownloadEvent<T>)
                     }
                 }
-                task.updatePercentageProgress()
+
                 if ((isPercentageProgressEvent && lastEventPercentage != task.percentageProgress) || (!isPercentageProgressEvent && System.currentTimeMillis() - lastEventTime > minProgressEventInterval)) {
                     lastEventTime = System.currentTimeMillis()
                     lastEventPercentage = task.percentageProgress
                     onProgressEvent(task, event)
                 }
                 if (isPause || task.isSuspend() || task.isCancel()) {
+                    notFinished = true
                     Debug.log("${task.name} - 任务被暂停, All=${isPause}, Self Suspend=${task.isSuspend()}, cancel=${task.isCancel()}")
                     break
                 }
@@ -490,8 +535,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             //val tempDelete = tempFile.delete()
             task.deleteRelatedFiles()
         } else {
-            // 判断是finish还是pause todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
-            if (task.fileLength == task.downloadedLength) {
+            // 判断是finish还是pause，task.fileLength为null则无法判断是否完成，只能从是否正常结尾来判断
+            // todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
+            if (!notFinished || (task.fileLength != null && task.downloadedLength >= task.fileLength!!)) {
                 if (!tempFile.renameTo(file)) {
                     throw KDownloadException("下载完成，临时文件重命名失败")
                 }
@@ -509,11 +555,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
     }
 
+    /** 不用默认的-1，防止出现加法错误以及方便后续的判断 */
     @Throws(Exception::class)
-    private fun getContentLengthLong(url: String): Long {
+    private fun getContentLengthLongOrNull(url: String): Long? {
         val headRequest = Request
             .Builder()
             .url(url)
+            .header("Accept-Encoding", "identity")
             .head()
             .build()
         // @Throws(IOException::class)
@@ -522,7 +570,28 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         if (!responseByHead.isSuccessful) {
             throw KDownloadException("HEAD请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
         }
-        return responseByHead.headersContentLength()
+        //Debug.log("$url - getContentLengthLongOrNull-headers:\n${responseByHead.headers}")
+        //Debug.log("$url - ContentLengthString: ${responseByHead.headers["Content-Length"]}, ContentLengthLong: $contentLengthOrNull")
+        return responseByHead.getContentLengthOrNull()
+    }
+
+
+    @Throws(Exception::class)
+    private fun <T : AbstractKDownloadTask> checkContentLengthAndBreakpointSupport(task: T) {
+        val headRequest = Request
+            .Builder()
+            .url(task.url)
+            .header("Accept-Encoding", "identity")
+            .head()
+            .build()
+        // @Throws(IOException::class)
+        val responseByHead = mClient.newCall(headRequest).execute()
+        // 验证地址的连接
+        if (!responseByHead.isSuccessful) {
+            throw KDownloadException("HEAD请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
+        }
+        task.fileLength = responseByHead.getContentLengthOrNull()
+        task.isSupportBreakpoint = responseByHead.headers["Accept-Ranges"] == "bytes"
     }
 
     /**
@@ -601,7 +670,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // failed()内部处理状态和重试，然后event完了刚好进到finally进行重试，这一系列流程是连贯的，修改时要注意！！
         if (task.failed(e)) {
             downloadListener?.onFail(task, e)
-            event?.fail!!.invoke(e)
+            event?.fail?.invoke(e)
         }
     }
 
@@ -623,8 +692,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         (downloadListener as? IGroupDownloadListener)?.onGroupProgress(group)
     }
 
+
+    /** Returns the Content-Length as reported by the response headers. */
+    private fun Response.getContentLengthOrNull(): Long? {
+        return headers["Content-Length"]?.toLongOrNull()
+    }
+
     /** 设为默认下载，没有反选，暂时想不到有反选的需求的场景 */
-    fun default() {
+    fun setDefault() {
         isDefault = true
         if (mDefaultKDownloader != this) {
             mDefaultKDownloader = this

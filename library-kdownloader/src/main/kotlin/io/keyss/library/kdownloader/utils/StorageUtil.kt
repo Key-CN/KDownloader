@@ -1,6 +1,7 @@
 package io.keyss.library.kdownloader.utils
 
 import android.os.StatFs
+import android.util.Log
 import io.keyss.library.kdownloader.config.StorageInsufficientException
 import java.io.File
 
@@ -12,6 +13,7 @@ import java.io.File
 object StorageUtil {
 
     @JvmStatic
+    @Throws(IllegalArgumentException::class)
     fun getAvailableBytes(path: File): Long {
         // 文件系统上可用的字节数，包括保留的块（普通应用程序不可用）。大多数应用程序将改为使用getAvailableBytes（）。
         val statFs = StatFs(path.absolutePath)
@@ -30,14 +32,15 @@ object StorageUtil {
     /**
      * 检测空间是否足够，没问题就过，有问题直接抛，方便 todo 最后抽到Util类中
      */
-    @Throws(StorageInsufficientException::class)
+    @Throws(Exception::class)
     @JvmStatic
     fun isStorageEnough(path: File, fileLength: Long) {
         val freeSpace = getAvailableBytes(path)
         if (freeSpace == 0L) {
             throw StorageInsufficientException("可用空间为0", freeSpace, fileLength)
         }
-        if (freeSpace < fileLength) {
+        // 加上=，防止出现 0 < 0的情况
+        if (freeSpace <= fileLength) {
             throw StorageInsufficientException("可用空间不足", freeSpace, fileLength)
         }
     }
@@ -47,7 +50,9 @@ object StorageUtil {
             isStorageEnough(path, fileLength)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            //e.printStackTrace()
+            // 改用w级别输出
+            Log.w("可用空间不足", e)
             false
         }
     }

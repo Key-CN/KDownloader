@@ -1,6 +1,7 @@
 package io.keyss.library.kdownloader.core
 
 import android.os.Environment
+import android.util.Log
 import io.keyss.library.kdownloader.config.Status
 import io.keyss.library.kdownloader.utils.Debug
 import io.keyss.library.kdownloader.utils.MD5Util
@@ -29,8 +30,11 @@ abstract class AbstractKDownloadTask(
     // todo 改成分开的三个
     val relatedFiles: CopyOnWriteArrayList<File> = CopyOnWriteArrayList()
 
-    /** 文件长度 */
-    var fileLength: Long = 0
+    /** 文件长度（不一定精确），由代码获取验证 */
+    var fileLength: Long? = null
+
+    /** 是否支持断点续传，由代码自动验证 */
+    var isSupportBreakpoint = false
 
     /** 重试次数 */
     var retryTimes = 0
@@ -72,10 +76,11 @@ abstract class AbstractKDownloadTask(
         }
         get() {
             // 再根据长度来一个强制修改，太小的文件分块没有意义，目前设定一个块至少10MB(基本上网速10mb/s)
-            return if (field == 1 || fileLength < AbstractKDownloader.MIN_BLOCK_LENGTH) {
+            return if (fileLength == null || field == 1 || fileLength!! < AbstractKDownloader.MIN_BLOCK_LENGTH) {
                 1
             } else {
-                val blockNumber = (fileLength / AbstractKDownloader.MIN_BLOCK_LENGTH).toInt()
+                // fileLength == null 已最优先判断过，所以此次一定不为null
+                val blockNumber = (fileLength!! / AbstractKDownloader.MIN_BLOCK_LENGTH).toInt()
                 return if (blockNumber < field) {
                     blockNumber
                 } else {
@@ -87,7 +92,9 @@ abstract class AbstractKDownloadTask(
     /** 更新百分比进度 */
     fun updatePercentageProgress() {
         // 向下取整，防止提早出现100
-        percentageProgress = (downloadedLength * 1.0 / fileLength * 100).toInt()
+        if (fileLength != null) {
+            percentageProgress = (downloadedLength * 1.0 / fileLength!! * 100).toInt()
+        }
     }
 
     /**
@@ -175,7 +182,11 @@ abstract class AbstractKDownloadTask(
      * @return 是否失败了
      */
     fun failed(e: Exception): Boolean {
-        e.printStackTrace()
+        //e.printStackTrace()
+        // 失败改用w级别输出
+        Log.w("task:${name}, 下载失败", e)
+        // 为了好理解，先失败，然后重试，不能重试->失败，能重试->暂停(没有独立出重试的状态)
+        status = Status.FAILED
         val isRetry = autoRetry()
         // 不能自动重试则为失败
         if (!isRetry) {
@@ -229,6 +240,10 @@ abstract class AbstractKDownloadTask(
      * 获取状态的中文名
      */
     fun getStatusText(): String = Status.getStatusText(status)
+
+    override fun toString(): String {
+        return "${this::class.simpleName}(id=$id, url='$url', localPath='$localPath', name=$name, isDeleteExist=$isDeleteExist, markName='$markName', fileLength=$fileLength, isSupportBreakpoint=$isSupportBreakpoint, priority=$priority, groupId=${group?.groupId}, maxConnections=$maxConnections)"
+    }
 
     abstract class Builder<T : AbstractKDownloadTask> {
         protected var id: Int = 0

@@ -20,6 +20,9 @@ open class TaskGroup(
     var percentageProgress: Int = 0
         private set
 
+    /**
+     * 可能存在获取不到的情况
+     */
     fun addTotalLength(length: Long) {
         totalLength += length
     }
