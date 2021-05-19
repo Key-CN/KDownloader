@@ -26,6 +26,10 @@ object GroupDownloadListenerImpl : IGroupDownloadListener {
         Log.d(TAG, "onFail() called with: task = $task, e = $e")
     }
 
+    override fun onFinish(task: AbstractKDownloadTask) {
+        Log.i(TAG, "onFinish: $task")
+    }
+
     override fun onTerminate(task: AbstractKDownloadTask) {
         Log.i(TAG, "onTerminate: $task")
     }
@@ -36,10 +40,6 @@ object GroupDownloadListenerImpl : IGroupDownloadListener {
 
     override fun onPause(task: AbstractKDownloadTask) {
         Log.i(TAG, "onPause: $task")
-    }
-
-    override fun onFinish(task: AbstractKDownloadTask) {
-        Log.i(TAG, "onFinish: $task")
     }
 
     override fun onProgress(task: AbstractKDownloadTask) {

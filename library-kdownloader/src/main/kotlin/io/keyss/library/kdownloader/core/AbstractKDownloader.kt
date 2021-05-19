@@ -6,10 +6,7 @@ import io.keyss.library.kdownloader.config.KDownloadException
 import io.keyss.library.kdownloader.config.PersistenceType
 import io.keyss.library.kdownloader.config.Status
 import io.keyss.library.kdownloader.utils.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -17,7 +14,6 @@ import okhttp3.internal.closeQuietly
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.RandomAccessFile
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -37,7 +33,23 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         const val DEFAULT_BUFFER_SIZE = 32 * 1024
     }
 
-    val mTasks: CopyOnWriteArrayList<AbstractKDownloadTask> = CopyOnWriteArrayList()
+    /**最大线程数量*/
+    var maxConnections = 1
+        set(value) {
+            field = if (value <= 0) {
+                1
+            } else if (value >= 20) {
+                20
+            } else {
+                value
+            }
+        }
+
+    private val mTasks: TaskList<AbstractKDownloadTask> = TaskList {
+        if (it > 0) {
+            nextQueue()
+        }
+    }
     var downloadListener: IDownloadListener? = null
     private var mTaskPersistenceType: @PersistenceType Int = taskPersistenceType
 
@@ -75,7 +87,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     fun generateId(): Int {
-        AtomicInteger()
         return mIdCounter.getAndIncrement()
     }
 
@@ -90,18 +101,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // todo 我可能对这个readTimeout存在误解，再深究
         //.readTimeout(0, TimeUnit.NANOSECONDS)
         .build()
-
-
-    var maxConnections = 1
-        set(value) {
-            field = if (value <= 0) {
-                1
-            } else if (value >= 20) {
-                20
-            } else {
-                value
-            }
-        }
 
     /**
      * 自定义OkHttpClient
@@ -128,15 +127,10 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
     }
 
-    /**
-     * 清楚所有生命周期已完结的任务，包括finish和cancel
-     */
-    fun removeAllLifecycleOverTasks() {
-        mTasks.removeAll {
-            it.isLifecycleOver()
+    fun getWithoutFinishTasks(): List<AbstractKDownloadTask> {
+        return mTasks.filter {
+            !it.isFinished()
         }
-        // Call requires API level 24
-        // tasks.removeIf
     }
 
     /**
@@ -151,6 +145,18 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
     }
 
+    fun <T : AbstractKDownloadTask> removeTaskAndDeleteFile(vararg tasks: T) {
+        for (task in tasks) {
+            if (task.isStarting()) {
+                // 如果还在执行中，先挂起，至少先停掉，万一还没执行完也麻烦
+                task.cancel()
+            } else {
+                task.deleteRelatedFiles()
+            }
+            mTasks.remove(task)
+        }
+    }
+
     fun <T : AbstractKDownloadTask> cancelTask(vararg tasks: T) {
         for (task in tasks) {
             task.cancel()
@@ -158,7 +164,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
     }
 
-    fun startTaskQueue() {
+    private fun nextQueue(): Unit {
+        if (!isPause) {
+            startTaskQueue()
+        }
+    }
+
+    open fun startTaskQueue() {
         // 如果正在运行中返回，也可以执行，如果有空位置则补进去
         /*if () {
             return
@@ -191,16 +203,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 添加一个下载任务，不启动
      */
     open fun addTask(task: AbstractKDownloadTask): Boolean {
-        val addIfAbsent = mTasks.addIfAbsent(task)
-        // CopyOnWriteArrayList 不能排序，取的时候排
-        /*mTasks.sortBy {
-            it.priority
-        }*/
-        Debug.log("仅添加任务，添加=$addIfAbsent")
-        if (!isPause) {
-            startTaskQueue()
-        }
-        return addIfAbsent
+        return mTasks.addIfAbsent(task)
     }
 
     /**
@@ -210,9 +213,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         val addIfAbsent = addTask(task)
         Debug.log("添加任务并启动，添加=$addIfAbsent")
         // 暂停的情况下才启动，否则有add启动
-        if (isPause) {
-            startTaskQueue()
-        }
+        startTaskQueue()
         return addIfAbsent
     }
 
@@ -220,50 +221,28 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 已组级别概念进行下载，一整组资源完成算完成
      */
     @Throws(Exception::class)
+    fun <T : AbstractKDownloadTask> createTaskGroup(vararg task: T): Boolean {
+        val taskGroup = TaskGroup(task.hashCode(), task.toList())
+        return addTaskGroup(taskGroup)
+    }
+
+    /**
+     * 已组级别概念进行下载，一整组资源完成算完成
+     */
+    @Throws(Exception::class)
     fun <T : AbstractKDownloadTask> createTaskGroup(tasks: Collection<T>): Boolean {
-        if (tasks.isEmpty()) {
-            return false
-        }
-
-        // 重复任务怎么办？因为已整组为单位，所以一个重复则视为失败，todo 还需要考虑一下
-        for (task in mTasks) {
-            for (newTask in tasks) {
-                // 不删除已存在 并且 老任务已经完成 并且 URL、存储路径、name相同
-                if (!newTask.isDeleteExist && task.isFinished() && newTask == task) {
-                    Log.w(TAG, "$newTask - createTaskGroup: 该任务已存在，取消下载整组任务")
-                    return false
-                }
-            }
-        }
-
         val taskGroup = TaskGroup(tasks.hashCode(), tasks)
-        tasks.forEach {
-            // 相当于顺便检查正确性
-            taskGroup.addTotalLength(getContentLengthLongOrNull(it.url) ?: 0)
-            it.group = taskGroup
-        }
-        // 开始下载
-        val addAllSuccessful = mTasks.addAll(tasks)
-        if (!isPause) {
-            startTaskQueue()
-        }
-        return addAllSuccessful
+        return addTaskGroup(taskGroup)
     }
 
     /**
      * 新增一个任务组
      */
-    fun <T : TaskGroup> addTaskGroup(taskGroup: T): Boolean {
-        if (taskGroup.tasks.isEmpty()) {
+    open fun <T : TaskGroup> addTaskGroup(taskGroup: T): Boolean {
+        if (!checkAndAddGroup(taskGroup)) {
             return false
         }
-        // 去重
-        for (task in mTasks) {
-            if (task.group?.groupId == taskGroup.groupId) {
-                Log.w(TAG, "${taskGroup.groupId} - addTaskGroup: 该任务组ID已存在，取消下载整组任务")
-                return false
-            }
-        }
+
         // fixme 线程的处理，获取长度在子线程
         taskGroup.tasks.forEach {
             // 相当于顺便检查正确性
@@ -276,12 +255,24 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             )
             it.group = taskGroup
         }
-        // 开始下载
-        val addAllSuccessful = mTasks.addAll(taskGroup.tasks)
-        if (!isPause) {
-            startTaskQueue()
+        return mTasks.addAll(taskGroup.tasks)
+    }
+
+    private fun <T : TaskGroup> checkAndAddGroup(taskGroup: T): Boolean {
+        if (taskGroup.tasks.isEmpty()) {
+            return false
         }
-        return addAllSuccessful
+        // 去重
+        for (task in mTasks) {
+            for (newTask in taskGroup.tasks) {
+                // 不删除已存在 并且 URL、存储路径、name相同
+                if (!newTask.isDeleteExist && newTask == task) {
+                    Log.w(TAG, "$newTask - checkAndAddGroup: 该任务已存在，取消下载整组任务")
+                    return false
+                }
+            }
+        }
+        return true
     }
 
     /**
@@ -290,9 +281,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     fun <T : TaskGroup> addTaskGroupAndStart(taskGroup: T): Boolean {
         val addTaskGroup = addTaskGroup(taskGroup)
         Debug.log("添加任务组并启动，添加=$addTaskGroup")
-        if (isPause) {
-            startTaskQueue()
-        }
+        startTaskQueue()
         return addTaskGroup
     }
 
@@ -302,9 +291,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     fun <T : AbstractKDownloadTask> createTaskGroupAndStart(tasks: Collection<T>): Boolean {
         val addTaskGroup = createTaskGroup(tasks)
         Debug.log("创建任务组并启动，添加=$addTaskGroup")
-        if (isPause) {
-            startTaskQueue()
-        }
+        startTaskQueue()
         return addTaskGroup
     }
 
@@ -334,26 +321,16 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     @Throws(Exception::class)
-    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>? = null, isThrowOut: Boolean) {
+    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>?, isThrowOut: Boolean) {
         try {
             downloadCore(task, event)
         } catch (e: Exception) {
-            onFailedEvent(task, e, event)
-            // 关于重试，自动重试还是业务层去重试？最终方案，不应在逻辑层直接重试，但可以设定重试的条件，相当于还是由业务层来管理
-            // todo 如果有自动重试，是不是要再加一个重试的event？
-            // 最终觉得采用多加一个参数来简化，少包一层try catch，只有同步模式才抛到外面
-            // 如果不采用回调方式则继续往外抛，总之要丢给业务层去处理
-            // 网络没连接UnknownHostException，超时SocketTimeout
-            if (isThrowOut) {
-                throw e
-            }
+            // 先走catch，自动重试的，哪怕最后一个任务，在finally中也可以继续被执行到
+            onFailedEvent(task, event, e, isThrowOut)
         } finally {
             // onTerminate 应该是流程结束的必走，类似于菊花消失的场景，至于是什么情况走到这里的，应该再自主判断状态
             onTerminateEvent(task, event)
-            if (!isPause) {
-                // 继续下载下一个
-                startTaskQueue()
-            }
+            nextQueue()
         }
     }
 
@@ -453,7 +430,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             writeTempFile.setLength(task.fileLength!!)
         }
         // 到这里才创建出file
-        task.relatedFiles.addIfAbsent(tempFile)
+        task.tempFile = tempFile
         // 需要校验写了多少了
         /*if (task.maxConnections == 1) {
             val getRequest = headRequest.newBuilder().get().build()
@@ -481,6 +458,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         Debug.log("getRequest已构建：headers=${getRequest.headers}")
         val responseByGet = mClient.newCall(getRequest).execute()
         // todo 验证是否支持，Range是在HTTP/1.1中新增的请求头，如果Server端支持Range，会在响应头中添加Accept-Range: bytes；否则，会返回 Accept-Range: none
+        // todo 2. code=416也是不支持
         //val isAcceptRanges = responseByGet.header("Accept-Ranges", "none")
         //Debug.log("getRequest已返回：http code=${responseByGet.code}, headers=${responseByGet.headers}")
         // 前面head已校验，此处不再多余校验，算了，我觉得万一有个万一呢，来个一次性校验吧
@@ -532,7 +510,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         if (task.isCancel()) {
             Debug.log("${task.name} - 取消下载")
             // 直接删除，取消删除可以不管错误
-            //val tempDelete = tempFile.delete()
             task.deleteRelatedFiles()
         } else {
             // 判断是finish还是pause，task.fileLength为null则无法判断是否完成，只能从是否正常结尾来判断
@@ -541,15 +518,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 if (!tempFile.renameTo(file)) {
                     throw KDownloadException("下载完成，临时文件重命名失败")
                 }
+                task.file = file
+                task.tempFile = null
                 onFinishEvent(task, event)
-                // 比较后存入，重命名成功后剩下一个
-                task.relatedFiles.addIfAbsent(file)
-                task.relatedFiles.remove(tempFile)
             } else {
                 onPauseEvent(task, event)
             }
             // 这里记录进度，而不是在每次写入时，不考虑突然crash的情况，因为每个buffer记录一次影响的效率更多，得不偿失，也可以考虑一种折中的策略
-
         }
         Debug.log("${task.name} downloadCore执行结束（非完成）")
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
@@ -576,6 +551,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
 
+    /**
+     * 根据head获取文件长度，是否支持断点续传，ETag等
+     */
     @Throws(Exception::class)
     private fun <T : AbstractKDownloadTask> checkContentLengthAndBreakpointSupport(task: T) {
         val headRequest = Request
@@ -591,7 +569,12 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             throw KDownloadException("HEAD请求错误, HTTP status code=${responseByHead.code}, HTTP status message=${responseByHead.message}")
         }
         task.fileLength = responseByHead.getContentLengthOrNull()
+        if (task.fileLength == null) {
+            Debug.log("${task.url} - 获取不到Content-Length，Header:\n${responseByHead.headers}")
+        }
         task.isSupportBreakpoint = responseByHead.headers["Accept-Ranges"] == "bytes"
+        // todo 应该是比对 新老etag是否相等
+        task.etag = responseByHead.headers["ETag"]
     }
 
     /**
@@ -600,6 +583,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     private fun <T : AbstractKDownloadTask> checkGroupStatus(group: TaskGroup, event: DownloadEvent<T>?) {
         var isGroupFinished = true
         var isGroupTerminated = true
+        // todo 假设3个任务，一个完成，一个取消，一个暂停，那就一个都不会走，这在处理上应该有问题
         group.tasks.forEach {
             // 有一个未完结
             if (isGroupTerminated && !it.isTerminated()) {
@@ -640,6 +624,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         task.status = Status.FINISHED
         Debug.log("${task.name} - 下载完成")
         event?.finish?.invoke()
+        // 下载完成后无UI类的可以在event事件中移除任务，UI类的不移除，展示给用户已完成状态，也可以在Terminate中统一处理多个状态
         downloadListener?.onFinish(task)
     }
 
@@ -656,7 +641,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     private fun <T : AbstractKDownloadTask> onStartEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.CONNECTING
-        Debug.log("download core - name: ${task.name} url: ${task.url} path: ${task.localPath}")
+        Debug.log("download core - name: ${task.name} path: ${task.localPath}\nurl: ${task.url}")
         // 如果业务需要二选一，可以再加个变量控制，走了自己的回调就不走全局回调
         //event?.start?.invoke() ?: downloadListener?.onStart(task)
         event?.start?.invoke()
@@ -666,11 +651,20 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 失败的事件，这里很复杂，能否重试完全依赖于是因为什么错误
      */
-    private fun <T : AbstractKDownloadTask> onFailedEvent(task: T, e: Exception, event: DownloadEvent<T>?) {
+    @Throws(Exception::class)
+    private fun <T : AbstractKDownloadTask> onFailedEvent(task: T, event: DownloadEvent<T>?, e: Exception, isThrowOut: Boolean) {
         // failed()内部处理状态和重试，然后event完了刚好进到finally进行重试，这一系列流程是连贯的，修改时要注意！！
         if (task.failed(e)) {
             downloadListener?.onFail(task, e)
             event?.fail?.invoke(e)
+            // 关于重试，自动重试还是业务层去重试？最终方案，不应在逻辑层直接重试，但可以设定重试的条件，相当于还是由业务层来管理
+            // todo 如果有自动重试，是不是要再加一个重试的event？
+            // 最终觉得采用多加一个参数来简化，少包一层try catch，只有同步模式才抛到外面
+            // 如果不采用回调方式则继续往外抛，总之要丢给业务层去处理
+            // 网络没连接UnknownHostException，超时SocketTimeout
+            if (isThrowOut) {
+                throw e
+            }
         }
     }
 

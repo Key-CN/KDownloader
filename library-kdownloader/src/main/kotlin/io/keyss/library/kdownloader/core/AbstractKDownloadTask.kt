@@ -8,7 +8,6 @@ import io.keyss.library.kdownloader.utils.MD5Util
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * @author Key
@@ -20,21 +19,27 @@ abstract class AbstractKDownloadTask(
     val url: String,
     val localPath: String,
     var name: String? = null,
-    val isDeleteExist: Boolean = true,
+    var isDeleteExist: Boolean = true,
     /** 方便debug识别任务组，或用于UI展示 */
     var markName: String = ""
 ) {
     /** 任务状态 */
+    @Volatile
     internal var status: @Status Int = Status.CREATED
 
-    // todo 改成分开的三个
-    val relatedFiles: CopyOnWriteArrayList<File> = CopyOnWriteArrayList()
+    // 正式文件，实际也就是File(localPath, name!!)
+    var file: File? = null
+    var tempFile: File? = null
+    var configFile: File? = null
 
     /** 文件长度（不一定精确），由代码获取验证 */
     var fileLength: Long? = null
 
     /** 是否支持断点续传，由代码自动验证 */
     var isSupportBreakpoint = false
+
+    /** 资源的token */
+    var etag: String? = null
 
     /** 重试次数 */
     var retryTimes = 0
@@ -98,6 +103,16 @@ abstract class AbstractKDownloadTask(
     }
 
     /**
+     * 重新下载任务需要重置一些数据
+     */
+    fun reset() {
+        status = Status.CREATED
+        downloadedLength = 0
+        remainingAutoRetryTimes = 3
+        isDeleteExist = true
+    }
+
+    /**
      * 如果失败了。可以自动重试
      */
     private fun autoRetry(): Boolean {
@@ -152,6 +167,8 @@ abstract class AbstractKDownloadTask(
      * 仅删除临时文件
      */
     fun deleteTempFiles(): Unit {
+        val delete2 = tempFile?.delete()
+        Debug.log("$name - 临时文件: 删除${if (delete2 == true) "成功" else "失败"}")
 
     }
 
@@ -159,11 +176,10 @@ abstract class AbstractKDownloadTask(
      * 删除相关的所有文件
      */
     fun deleteRelatedFiles() {
-        relatedFiles.forEach {
-            val delete = it.delete()
-            val remove = relatedFiles.remove(it)
-            Debug.log("${it.name} - 删除${if (delete) "成功" else "失败"}, 从列表移除${if (remove) "成功" else "失败"}")
-        }
+        val delete1 = file?.delete()
+        val delete2 = tempFile?.delete()
+        val delete3 = configFile?.delete()
+        Debug.log("${localPath}/${name} - 正式文件: 删除${if (delete1 == true) "成功" else "失败"}, 临时文件: 删除${if (delete2 == true) "成功" else "失败"}, 配置文件: 删除${if (delete3 == true) "成功" else "失败"}")
     }
 
     /**
@@ -228,9 +244,8 @@ abstract class AbstractKDownloadTask(
 
     override fun equals(other: Any?): Boolean {
         return if (other is AbstractKDownloadTask) {
-            //id相同 或者  url，存储路径，存储名字，三者相同才视为同一对象
-            // FIXME: 2021/4/30 ID字段待修改
-            id == other.id || (url == other.url && localPath == other.localPath && name == other.name)
+            //etag相同 或者 url，存储路径，存储名字，三者相同才视为同一对象
+            (etag != null && other.etag != null && etag == other.etag) || (url == other.url && localPath == other.localPath && name == other.name)
         } else {
             false
         }
