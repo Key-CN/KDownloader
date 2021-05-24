@@ -112,6 +112,11 @@ abstract class AbstractKDownloadTask(
         isDeleteExist = true
     }
 
+    fun retry() {
+        status = Status.PAUSED
+        remainingAutoRetryTimes = 3
+    }
+
     /**
      * 如果失败了。可以自动重试
      */
@@ -200,7 +205,7 @@ abstract class AbstractKDownloadTask(
     fun failed(e: Exception): Boolean {
         //e.printStackTrace()
         // 失败改用w级别输出
-        Log.w("task:${name}, 下载失败", e)
+        Log.w("task:${name}, failed()下载失败", e)
         // 为了好理解，先失败，然后重试，不能重试->失败，能重试->暂停(没有独立出重试的状态)
         status = Status.FAILED
         val isRetry = autoRetry()
@@ -257,7 +262,14 @@ abstract class AbstractKDownloadTask(
     fun getStatusText(): String = Status.getStatusText(status)
 
     override fun toString(): String {
-        return "${this::class.simpleName}(id=$id, url='$url', localPath='$localPath', name=$name, isDeleteExist=$isDeleteExist, markName='$markName', fileLength=$fileLength, isSupportBreakpoint=$isSupportBreakpoint, priority=$priority, groupId=${group?.groupId}, maxConnections=$maxConnections)"
+        return "${this::class.simpleName} (id=$id, url='$url', localPath='$localPath', name=$name, isDeleteExist=$isDeleteExist, markName='$markName', fileLength=$fileLength, isSupportBreakpoint=$isSupportBreakpoint, priority=$priority, groupId=${group?.groupId}, maxConnections=$maxConnections)"
+    }
+
+    /**
+     * 方便在日志中识别的名字
+     */
+    fun getLogName(): String {
+        return "${this::class.simpleName}: ${markName.takeIf { it.isNotBlank() } ?: name}"
     }
 
     abstract class Builder<T : AbstractKDownloadTask> {

@@ -59,9 +59,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     @Volatile
     private var isPause = false
 
-    /**是否为默认下载器*/
-    private var isDefault = false
-
     /**
      * 最小进度事件输出时间，默认5秒，想要每次都输出只要设小就行了
      */
@@ -190,7 +187,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         repeat(remainingSize) { index ->
             waitingTasks.getOrNull(index)?.let { task ->
                 // 基类没有绑定生命周期，设定也是全局可用
-                asyncDownloadWrap(task)
+                asyncDownloadWrapper(task)
             }
         }
     }
@@ -301,7 +298,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     @Throws(Exception::class)
     suspend fun <T : AbstractKDownloadTask> syncDownloadTask(task: T): T = task.apply {
         withContext(Dispatchers.IO) {
-            downloadWrap(this@apply, null, true)
+            downloadWrapper(this@apply, null, true)
         }
     }
 
@@ -311,17 +308,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     fun <T : AbstractKDownloadTask> asyncDownloadTask(task: T, event: DownloadEvent<T>) {
         // 内部不实用扩展方法，因为扩展方法是使用默认下载器，也许调用者此次是使用了其他的下载器
         //task.async(event)
-        asyncDownloadWrap(task, event)
+        asyncDownloadWrapper(task, event)
     }
 
-    private fun <T : AbstractKDownloadTask> asyncDownloadWrap(task: T, event: DownloadEvent<T>? = null) {
+    private fun <T : AbstractKDownloadTask> asyncDownloadWrapper(task: T, event: DownloadEvent<T>? = null) {
         GlobalScope.launch(Dispatchers.IO) {
-            downloadWrap(task, event, false)
+            downloadWrapper(task, event, false)
         }
     }
 
     @Throws(Exception::class)
-    private fun <T : AbstractKDownloadTask> downloadWrap(task: T, event: DownloadEvent<T>?, isThrowOut: Boolean) {
+    private suspend fun <T : AbstractKDownloadTask> downloadWrapper(task: T, event: DownloadEvent<T>?, isThrowOut: Boolean) {
         try {
             downloadCore(task, event)
         } catch (e: Exception) {
@@ -339,11 +336,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 请在子线程执行
      */
     @Throws(Exception::class)
-    private fun <T : AbstractKDownloadTask> downloadCore(task: T, event: DownloadEvent<T>? = null) {
+    private suspend fun <T : AbstractKDownloadTask> downloadCore(task: T, event: DownloadEvent<T>? = null) {
         // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
-        if (isDefault) {
-            setDefault()
-        }
+        setDefault()
         // 启动在最前方，必然要走，例如弹出dialog子类的
         onStartEvent(task, event)
         // 先给启动状态，再抛出异常，状态过程才完整
@@ -395,7 +390,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             //task.name = UUID.randomUUID().toString()
             task.name = MD5Util.stringToMD5(task.url)
         }
-        Debug.log("${task.name} - length=${task.fileLength}, 是否支持断点续传=${task.isSupportBreakpoint}")
+        // byte/1024/1024/1024 G
+        Debug.log("${task.name} - length=${task.fileLength}≈${(task.fileLength ?: 0) / 1024 / 1024 / 1000.0}GB, 是否支持断点续传=${task.isSupportBreakpoint}")
 
         val file = File(storageFolder, task.name!!)
         // 先检测本地文件
@@ -580,7 +576,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 检查整组的完成状态，fixme 关于组的操作不是很满意
      */
-    private fun <T : AbstractKDownloadTask> checkGroupStatus(group: TaskGroup, event: DownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> checkGroupStatus(group: TaskGroup, event: DownloadEvent<T>?) {
         var isGroupFinished = true
         var isGroupTerminated = true
         // todo 假设3个任务，一个完成，一个取消，一个暂停，那就一个都不会走，这在处理上应该有问题
@@ -605,7 +601,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 任务结束后的通知，群组任务就放到单任务到终止位置检测
      */
-    private fun <T : AbstractKDownloadTask> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onTerminateEvent(task: T, event: DownloadEvent<T>?) {
         Debug.log("${task.name} - 当前状态=${task.getStatusText()}")
         event?.terminate?.invoke()
         downloadListener?.onTerminate(task)
@@ -616,11 +612,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     private fun <T : AbstractKDownloadTask> onProgressEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
         Debug.log("${task.name} - ${task.percentageProgress}%")
-        event?.progress?.invoke()
-        downloadListener?.onProgress(task)
+        // 进度的耗时业务处理不能影响到下载
+        GlobalScope.launch(Dispatchers.IO) {
+            event?.progress?.invoke()
+            downloadListener?.onProgress(task)
+        }
     }
 
-    private fun <T : AbstractKDownloadTask> onFinishEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onFinishEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
         task.status = Status.FINISHED
         Debug.log("${task.name} - 下载完成")
         event?.finish?.invoke()
@@ -628,7 +627,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         downloadListener?.onFinish(task)
     }
 
-    private fun <T : AbstractKDownloadTask> onPauseEvent(task: T, event: DownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onPauseEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.PAUSED
         // 要把队列中的任务加回队列中（目前方案没有移出，依旧在队列中），todo 如果是直接异步启动的话呢？是否应该在业务中处理？
         Debug.log("${task.name} - 下载暂停")
@@ -639,7 +638,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**
      * 启动事件
      */
-    private fun <T : AbstractKDownloadTask> onStartEvent(task: T, event: DownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onStartEvent(task: T, event: DownloadEvent<T>?) {
         task.status = Status.CONNECTING
         Debug.log("download core - name: ${task.name} path: ${task.localPath}\nurl: ${task.url}")
         // 如果业务需要二选一，可以再加个变量控制，走了自己的回调就不走全局回调
@@ -652,7 +651,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 失败的事件，这里很复杂，能否重试完全依赖于是因为什么错误
      */
     @Throws(Exception::class)
-    private fun <T : AbstractKDownloadTask> onFailedEvent(task: T, event: DownloadEvent<T>?, e: Exception, isThrowOut: Boolean) {
+    private suspend fun <T : AbstractKDownloadTask> onFailedEvent(task: T, event: DownloadEvent<T>?, e: Exception, isThrowOut: Boolean) {
         // failed()内部处理状态和重试，然后event完了刚好进到finally进行重试，这一系列流程是连贯的，修改时要注意！！
         if (task.failed(e)) {
             downloadListener?.onFail(task, e)
@@ -668,13 +667,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
     }
 
-    private fun <T : AbstractKDownloadTask> onGroupFinishEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onGroupFinishEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
         Debug.log("GroupId: ${group.groupId} - 整组下载完成")
         event?.groupFinish?.invoke()
         (downloadListener as? IGroupDownloadListener)?.onGroupFinish(group)
     }
 
-    private fun <T : AbstractKDownloadTask> onGroupTerminateEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
+    private suspend fun <T : AbstractKDownloadTask> onGroupTerminateEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
         Debug.log("GroupId: ${group.groupId} - 整组下载结束")
         event?.groupTerminate?.invoke()
         (downloadListener as? IGroupDownloadListener)?.onGroupTerminate(group)
@@ -682,8 +681,11 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     private fun <T : AbstractKDownloadTask> onGroupProgressEvent(group: TaskGroup, event: GroupDownloadEvent<T>?) {
         Debug.log("GroupId: ${group.groupId} - 整组下载进度: ${group.percentageProgress}%")
-        event?.groupProgress?.invoke()
-        (downloadListener as? IGroupDownloadListener)?.onGroupProgress(group)
+        // 进度的耗时业务处理不能影响到下载
+        GlobalScope.launch(Dispatchers.IO) {
+            event?.groupProgress?.invoke()
+            (downloadListener as? IGroupDownloadListener)?.onGroupProgress(group)
+        }
     }
 
 
@@ -694,7 +696,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     /** 设为默认下载，没有反选，暂时想不到有反选的需求的场景 */
     fun setDefault() {
-        isDefault = true
         if (mDefaultKDownloader != this) {
             mDefaultKDownloader = this
         }

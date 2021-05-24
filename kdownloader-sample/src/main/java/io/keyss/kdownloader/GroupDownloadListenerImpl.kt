@@ -10,15 +10,15 @@ import io.keyss.library.kdownloader.core.*
  */
 object GroupDownloadListenerImpl : IGroupDownloadListener {
     private const val TAG = "GroupDownloadListener"
-    override fun onGroupFinish(group: TaskGroup) {
+    override suspend fun onGroupFinish(group: TaskGroup) {
         Log.i(TAG, "onGroupFinish: $group")
     }
 
-    override fun onGroupTerminate(group: TaskGroup) {
+    override suspend fun onGroupTerminate(group: TaskGroup) {
         Log.i(TAG, "onGroupTerminate: $group")
     }
 
-    override fun onGroupProgress(group: TaskGroup) {
+    override suspend fun onGroupProgress(group: TaskGroup) {
         Log.i(TAG, "onGroupProgress: ${group.percentageProgress}%")
     }
 
