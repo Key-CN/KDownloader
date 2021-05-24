@@ -58,6 +58,8 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     @Volatile
     private var isPause = false
+    /** 是否正在遍历Task */
+    private var isTaskTraversing = false
 
     /**
      * 最小进度事件输出时间，默认5秒，想要每次都输出只要设小就行了
@@ -168,10 +170,11 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     }
 
     open fun startTaskQueue() {
-        // 如果正在运行中返回，也可以执行，如果有空位置则补进去
-        /*if () {
+        if (isTaskTraversing) {
+            Debug.log("正在遍历集合，撤销此次startTaskQueue")
             return
-        }*/
+        }
+        isTaskTraversing = true
         isPause = false
         // 启动队列中的任务
         val runningTasks = getRunningTasks()
@@ -190,6 +193,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 asyncDownloadWrapper(task)
             }
         }
+        isTaskTraversing = false
     }
 
     fun stopTaskQueue(): Unit {
@@ -319,6 +323,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     @Throws(Exception::class)
     private suspend fun <T : AbstractKDownloadTask> downloadWrapper(task: T, event: DownloadEvent<T>?, isThrowOut: Boolean) {
+        // 不重复执行，不加锁会发生进入两次，为了不走finally移到外面
+        if (!isTaskCanStart(task)) {
+            Debug.log("${task.getLogName()} 该任务已经开始，撤销本次执行")
+            return
+        }
+        // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
+        setDefault()
         try {
             downloadCore(task, event)
         } catch (e: Exception) {
@@ -337,22 +348,12 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     @Throws(Exception::class)
     private suspend fun <T : AbstractKDownloadTask> downloadCore(task: T, event: DownloadEvent<T>? = null) {
-        // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
-        setDefault()
         // 启动在最前方，必然要走，例如弹出dialog子类的
         onStartEvent(task, event)
         // 先给启动状态，再抛出异常，状态过程才完整
-        if (Looper.getMainLooper() == Looper.myLooper()) {
-            // todo 到时候如果改成纯Java库就注释掉这部分
+        if (Looper.getMainLooper().isCurrentThread) {
             throw KDownloadException("请在子线程下载")
         }
-        // todo 搜索任务栈中是否存在
-        // 1。 直接下载，但这个任务和任务栈中的某个任务完全相同？
-        // 2。 添加。是添加不进，在add的地方已经被过滤掉了
-        /*if (mTasks.contains(task)) {
-            mTasks.getOrNull(task)
-            if ()
-        }*/
         // 验证路径的可用性。首先校验本地
         val storageFolder = File(task.localPath)
         if (storageFolder.exists()) {
@@ -512,7 +513,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             // todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
             if (!notFinished || (task.fileLength != null && task.downloadedLength >= task.fileLength!!)) {
                 if (!tempFile.renameTo(file)) {
-                    throw KDownloadException("下载完成，临时文件重命名失败")
+                    throw KDownloadException("下载完成，缓存文件重命名失败")
                 }
                 task.file = file
                 task.tempFile = null
@@ -524,6 +525,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
         Debug.log("${task.name} downloadCore执行结束（非完成）")
         // 抛出异常的情况下走不到这里。所以下一个动作要放到外层
+    }
+
+    @Synchronized
+    private fun <T : AbstractKDownloadTask> isTaskCanStart(task: T): Boolean {
+        if (task.isStarting()) {
+            Debug.log("${task.getLogName()} 该任务已经开始，撤销本次执行")
+            return false
+        }
+        // 状态同步修改，防止多线程一起进入
+        task.status = Status.CONNECTING
+        return true
     }
 
     /** 不用默认的-1，防止出现加法错误以及方便后续的判断 */
@@ -639,7 +651,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      * 启动事件
      */
     private suspend fun <T : AbstractKDownloadTask> onStartEvent(task: T, event: DownloadEvent<T>?) {
-        task.status = Status.CONNECTING
         Debug.log("download core - name: ${task.name} path: ${task.localPath}\nurl: ${task.url}")
         // 如果业务需要二选一，可以再加个变量控制，走了自己的回调就不走全局回调
         //event?.start?.invoke() ?: downloadListener?.onStart(task)
