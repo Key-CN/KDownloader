@@ -58,7 +58,9 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
      */
     @Volatile
     private var isPause = false
+
     /** 是否正在遍历Task */
+    @Volatile
     private var isTaskTraversing = false
 
     /**
@@ -169,9 +171,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
     }
 
-    open fun startTaskQueue() {
+    open fun startTaskQueue(): Unit = withDefers {
+        defer {
+            isTaskTraversing = false
+        }
         if (isTaskTraversing) {
             Debug.log("正在遍历集合，撤销此次startTaskQueue")
+            // 不需要修改状态，直接return
             return
         }
         isTaskTraversing = true
@@ -179,7 +185,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 启动队列中的任务
         val runningTasks = getRunningTasks()
         if (runningTasks.size >= maxConnections) {
-            return
+            return@withDefers
         }
         val remainingSize = maxConnections - runningTasks.size
         // fixme 这有一个问题，队列中优先级最高的任务，被手动暂停后，再次开启的还是这个任务？所以这个优先级的原则应该是要不要排除手动暂停的方式呢？这样的话难道优先级最高的反而要去队尾？这不科学
@@ -193,7 +199,6 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 asyncDownloadWrapper(task)
             }
         }
-        isTaskTraversing = false
     }
 
     fun stopTaskQueue(): Unit {
@@ -326,6 +331,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         // 不重复执行，不加锁会发生进入两次，为了不走finally移到外面
         if (!isTaskCanStart(task)) {
             Debug.log("${task.getLogName()} 该任务已经开始，撤销本次执行")
+            // TODO: 2021/5/25 被中断？
             return
         }
         // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
@@ -409,25 +415,39 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
         }
         // 开始下载
         // 同时还要检测是否是任务，任务的话断点续传，未完成的任务前面加点隐藏。完成后重命名，如果这个过程中名字被占用怎么随机重命名
-        val tempFile = File(storageFolder, task.name!! + TEMP_FILE_SUFFIX)
-        // 直接固定起长度
-        if (tempFile.exists()) {
-            if (tempFile.length() != task.fileLength) {
-                if (!tempFile.delete()) {
-                    throw KDownloadException("删除临时文件失败")
+        File(storageFolder, task.name!! + TEMP_FILE_SUFFIX).let {
+            task.tempFile = it
+            val configFile = File(it.absolutePath + CONFIG_SUFFIX)
+            task.configFile = configFile
+            if (it.exists()) {
+                // 判断是否是同一个文件
+                val configText = try {
+                    configFile.readText()
+                } catch (e: Exception) {
+                    ""
+                }
+                Debug.log("${task.name} - 比对etag，任务=${task.etag}，本地=${configText}")
+                if (configText == task.etag) {
+                    task.downloadedLength = it.length()
+                    Debug.log("${task.name} - etag相同，跳到文件末尾, length=${task.downloadedLength}")
+                } else {
+                    if (task.deleteTemporaryFile()) {
+                        throw KDownloadException("删除临时文件失败")
+                    }
+                    if (task.deleteConfigFile()) {
+                        throw KDownloadException("删除配置文件失败")
+                    }
                 }
             }
-            // 相同则需要判断seek，
         }
         // MappedByteBuffer 也有不足，就是在数据量很小的时候，表现比较糟糕，那是因为 direct buffer 的初始化时间较长，所以建议大家只有在数据量较大的时候，在用 MappedByteBuffer。
         // 且存在内存占用和文件关闭等不确定问题。被 MappedByteBuffer 打开的文件只有在垃圾收集时才会被关闭，而这个点是不确定的。javadoc 里是这么说的：
         // A mapped byte buffer and the file mapping that it represents remain valid until the buffer itself is garbage-collected. ——JavaDoc
-        val writeTempFile = RandomAccessFile(tempFile, "rw")
-        if (task.fileLength != null) {
+        val writeTempFile = RandomAccessFile(task.tempFile, "rw")
+        /*if (task.fileLength != null && task.fileLength!! > 0) {
+            // length=3839937610≈3.662GB 耗时大约2分钟，取消此方案
             writeTempFile.setLength(task.fileLength!!)
-        }
-        // 到这里才创建出file
-        task.tempFile = tempFile
+        }*/
         // 需要校验写了多少了
         /*if (task.maxConnections == 1) {
             val getRequest = headRequest.newBuilder().get().build()
@@ -467,6 +487,14 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             throw KDownloadException("GET请求body为null, HTTP status code=${responseByGet.code}, HTTP status message=${responseByGet.message}, ContentLength=${responseByGet.getContentLengthOrNull()}")
         }
         task.status = Status.RUNNING
+        // 将etag写入配置文件
+        task.etag?.takeIf { it.isNotBlank() }?.let {
+            try {
+                task.configFile?.writeText(it)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
         // 非正常走完
         var notFinished = false
         BufferedInputStream(body.byteStream(), DEFAULT_BUFFER_SIZE).use { bis ->
@@ -512,11 +540,13 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             // 判断是finish还是pause，task.fileLength为null则无法判断是否完成，只能从是否正常结尾来判断
             // todo 不能在任务内操作，因为还需要额外操作，如果任务完成，则从队列中删除，如果是暂停则再放回队列中
             if (!notFinished || (task.fileLength != null && task.downloadedLength >= task.fileLength!!)) {
-                if (!tempFile.renameTo(file)) {
+                if (!task.tempFile!!.renameTo(file)) {
                     throw KDownloadException("下载完成，缓存文件重命名失败")
                 }
+                // 下完了才有file，所以下载完成才赋值，不然外部拿到task使用会有歧义
                 task.file = file
                 task.tempFile = null
+                task.deleteConfigFile()
                 onFinishEvent(task, event)
             } else {
                 onPauseEvent(task, event)

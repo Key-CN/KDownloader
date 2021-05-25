@@ -187,6 +187,28 @@ abstract class AbstractKDownloadTask(
         Debug.log("${localPath}/${name} - 正式文件: 删除${if (delete1 == true) "成功" else "失败"}, 临时文件: 删除${if (delete2 == true) "成功" else "失败"}, 配置文件: 删除${if (delete3 == true) "成功" else "失败"}")
     }
 
+    fun deleteTemporaryFile(): Boolean {
+        return tempFile.let {
+            // 存在且删除失败
+            !(it != null && it.exists() && !it.delete())
+        }.also {
+            if (it) {
+                tempFile = null
+            }
+        }
+    }
+
+    fun deleteConfigFile(): Boolean {
+        return configFile.let {
+            // 存在且删除失败 为失败，其他都是成功
+            !(it != null && it.exists() && !it.delete())
+        }.also {
+            if (it) {
+                configFile = null
+            }
+        }
+    }
+
     /**
      * 完成、失败、取消，这三种状态为结束。
      */
