@@ -1,7 +1,9 @@
 package io.keyss.kdownloader
 
 import android.util.Log
-import io.keyss.library.kdownloader.core.*
+import io.keyss.library.kdownloader.core.AbstractKDownloadTask
+import io.keyss.library.kdownloader.core.IGroupDownloadListener
+import io.keyss.library.kdownloader.core.TaskGroup
 
 /**
  * @author Key

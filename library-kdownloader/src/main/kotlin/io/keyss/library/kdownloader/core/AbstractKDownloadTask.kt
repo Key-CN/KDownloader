@@ -5,6 +5,7 @@ import android.util.Log
 import io.keyss.library.kdownloader.config.Status
 import io.keyss.library.kdownloader.utils.Debug
 import io.keyss.library.kdownloader.utils.MD5Util
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import java.io.File
@@ -15,6 +16,9 @@ import java.io.File
  * Description:
  */
 abstract class AbstractKDownloadTask(
+    /**
+     * 用户定义的ID
+     */
     var id: Int,
     val url: String,
     val localPath: String,
@@ -23,6 +27,11 @@ abstract class AbstractKDownloadTask(
     /** 方便debug识别任务组，或用于UI展示 */
     var markName: String = ""
 ) {
+    /**
+     * 数据库ID
+     */
+    var _id: Int? = null
+
     /** 任务状态 */
     @Volatile
     internal var status: @Status Int = Status.CREATED
@@ -42,7 +51,7 @@ abstract class AbstractKDownloadTask(
     var etag: String? = null
 
     /** 重试次数 */
-    var retryTimes = 0
+    var retryTimes: Int = 0
 
     /** 剩余自动重试的次数 */
     private var remainingAutoRetryTimes = 3
@@ -64,6 +73,11 @@ abstract class AbstractKDownloadTask(
      * 互相持有，可以从一个任务找到整组任务
      */
     var group: TaskGroup? = null
+
+    /**
+     * 独立的进度监听，我想在同步下载时也可以监听到进度，而不用去注册全局监听，注册了也还要判断是哪个任务，也不用额外去开一条协程轮训监听
+     */
+    private var mOnProgressListener: OnProgressListener? = null
 
     /**
      * 任务最多启动多少条线程进行下载，todo 还需要对应每条线程的起始byte和结尾byte，已下载byte
@@ -103,6 +117,34 @@ abstract class AbstractKDownloadTask(
     }
 
     /**
+     * @param task 任务，方便匿名任务使用
+     * @param onProgressListener
+     */
+    /*
+    fun <T : AbstractKDownloadTask> setOnProgressListener(onProgressListener: ((task: T, percentageProgress: Int) -> Unit)?) {
+        this.onProgressListener = onProgressListener
+    }
+
+    fun callOnProgress() {
+        onProgressListener?.invoke(percentageProgress)
+    }*/
+
+    fun setOnProgressListener(onProgressListener: OnProgressListener?) {
+        this.mOnProgressListener = onProgressListener
+    }
+
+    /**
+     * kotlin的包内使用
+     */
+    internal fun callOnProgress() {
+        mOnProgressListener?.let {
+            GlobalScope.launch(Dispatchers.IO) {
+                it.onProgress(percentageProgress)
+            }
+        }
+    }
+
+    /**
      * 重新下载任务需要重置一些数据
      */
     fun reset() {
@@ -121,10 +163,14 @@ abstract class AbstractKDownloadTask(
      * 如果失败了。可以自动重试
      */
     private fun autoRetry(): Boolean {
-        val canRetry = isFailed() && remainingAutoRetryTimes > 0
-        Debug.log("自动重试, canRetry=${canRetry}, 剩余次数=$remainingAutoRetryTimes")
+        val canRetry = isFailed() && (remainingAutoRetryTimes > 0 || retryTimes > 0)
+        Debug.log("自动重试, canRetry=${canRetry}, 自动重试剩余次数=$remainingAutoRetryTimes, 用户设定自动重试=${retryTimes}")
         if (canRetry) {
-            remainingAutoRetryTimes--
+            if (retryTimes > 0) {
+                retryTimes--
+            } else {
+                remainingAutoRetryTimes--
+            }
             status = Status.PAUSED
         }
         return canRetry
@@ -225,9 +271,6 @@ abstract class AbstractKDownloadTask(
      * @return 是否失败了
      */
     fun failed(e: Exception): Boolean {
-        //e.printStackTrace()
-        // 失败改用w级别输出
-        Log.w("task:${name}, failed()下载失败", e)
         // 为了好理解，先失败，然后重试，不能重试->失败，能重试->暂停(没有独立出重试的状态)
         status = Status.FAILED
         val isRetry = autoRetry()
@@ -235,6 +278,7 @@ abstract class AbstractKDownloadTask(
         if (!isRetry) {
             status = Status.FAILED
         }
+        Log.w("task:${name}, failed()下载失败, 重试=${isRetry}", e)
         return !isRetry
     }
 
@@ -284,18 +328,23 @@ abstract class AbstractKDownloadTask(
     fun getStatusText(): String = Status.getStatusText(status)
 
     override fun toString(): String {
-        return "${this::class.simpleName} (id=$id, url='$url', localPath='$localPath', name=$name, isDeleteExist=$isDeleteExist, markName='$markName', fileLength=$fileLength, isSupportBreakpoint=$isSupportBreakpoint, priority=$priority, groupId=${group?.groupId}, maxConnections=$maxConnections)"
+        return "${this::class.simpleName} (dataID=${_id}, id=$id, url='$url', localPath='$localPath', name=$name, isDeleteExist=$isDeleteExist, markName='$markName', fileLength=$fileLength, isSupportBreakpoint=$isSupportBreakpoint, priority=$priority, groupId=${group?.groupId}, maxConnections=$maxConnections)"
     }
 
     /**
      * 方便在日志中识别的名字
      */
     fun getLogName(): String {
-        return "${this::class.simpleName}: ${markName.takeIf { it.isNotBlank() } ?: name}"
+        return "${this::class.simpleName}: ${markName.takeIf { it.isNotBlank() } ?: name}(dataID=${_id})"
+    }
+
+    interface OnProgressListener {
+        fun onProgress(percentageProgress: Int)
     }
 
     abstract class Builder<T : AbstractKDownloadTask> {
         protected var id: Int = 0
+        protected var retryTimes: Int = 0
         protected lateinit var url: String
         protected var localPath: String = ""
         protected var markName: String = ""
@@ -306,6 +355,10 @@ abstract class AbstractKDownloadTask(
 
         fun url(url: String) = apply {
             this.url = url
+        }
+
+        fun retryTimes(retryTimes: Int) = apply {
+            this.retryTimes = retryTimes
         }
 
         fun id(id: Int) = apply {

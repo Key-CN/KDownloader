@@ -23,6 +23,7 @@ class DefaultKDownloadTask(
                 this.priority = this@Builder.priority
                 this.maxConnections = this@Builder.maxConnections
                 this.markName = this@Builder.markName
+                this.retryTimes = this@Builder.retryTimes
             }
         }
     }

@@ -6,7 +6,10 @@ import io.keyss.library.kdownloader.config.KDownloadException
 import io.keyss.library.kdownloader.config.PersistenceType
 import io.keyss.library.kdownloader.config.Status
 import io.keyss.library.kdownloader.utils.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -14,7 +17,6 @@ import okhttp3.internal.closeQuietly
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.RandomAccessFile
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * @author Key
@@ -36,22 +38,36 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /**最大线程数量*/
     var maxConnections = 1
         set(value) {
-            field = if (value <= 0) {
-                1
-            } else if (value >= 20) {
-                20
-            } else {
-                value
+            field = when {
+                value <= 0 -> {
+                    1
+                }
+                value >= 20 -> {
+                    20
+                }
+                else -> {
+                    value
+                }
             }
         }
 
+    /**
+     * 队列下载的队列，非历史任务列表，比如通过同步下载或者单独下载的任务就不在此列表中
+     */
     private val mTasks: TaskList<AbstractKDownloadTask> = TaskList {
         if (it > 0) {
             nextQueue()
         }
     }
     var downloadListener: IDownloadListener? = null
-    private var mTaskPersistenceType: @PersistenceType Int = taskPersistenceType
+
+    // fixme 改成直接传实现
+    //private val mTaskPersistenceType: @PersistenceType Int = taskPersistenceType
+
+    /**
+     * todo 改成可自定义实现类型
+     */
+    val history = MemoryCacheHistoryTask()
 
     /**
      * 整个下载器的状态，默认就是运行状态。
@@ -74,7 +90,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     var isPercentageProgressEvent = true
 
     // 内存的话每次启动都会从0开始，数据库的话需要读取一次ID
-    private var mIdCounter: AtomicInteger = when (mTaskPersistenceType) {
+    /*private var mIdCounter: AtomicInteger = when (mTaskPersistenceType) {
         PersistenceType.MEMORY_CACHE -> {
             AtomicInteger(0)
         }
@@ -89,7 +105,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     fun generateId(): Int {
         return mIdCounter.getAndIncrement()
-    }
+    }*/
 
     /**
      * 理论上使用okhttp优于使用HttpURLConnection，且几乎所有项目都使用okhttp
@@ -328,10 +344,22 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     @Throws(Exception::class)
     private suspend fun <T : AbstractKDownloadTask> downloadWrapper(task: T, event: DownloadEvent<T>?, isThrowOut: Boolean) {
-        // 不重复执行，不加锁会发生进入两次，为了不走finally移到外面
-        if (!isTaskCanStart(task)) {
+        // 判断是否历史任务
+        val inHistoryTask = isInHistoryTaskList(task)
+        if (inHistoryTask == null) {
+            val addToHistoryTaskList = addToHistoryTaskList(task)
+            // 如果加入失败的话，暂时没处理，就会不可避免的重复下载 todo 如果处理合适？无UI的情况下，是无法交予用户决定的
+        } /*else {
+            // 如果存在，则采用任务列表中的属性，也许任务类型不同，所以不能采用直接替换对象
+            task._id = inHistoryTask._id
+            task.status = inHistoryTask.status
+        }*/
+        // 加上判断任务列表中的值
+        // 不重复执行，不加锁会发生进入两次(异步时进入等)，为了不走finally移到外面
+        if (!isTaskCanStart(task) || (inHistoryTask != null && !isTaskCanStart(inHistoryTask))) {
             Debug.log("${task.getLogName()} 该任务已经开始，撤销本次执行")
             // TODO: 2021/5/25 被中断？
+            // todo 这时候应该传一个什么action出去呢？
             return
         }
         // 将最后一次调用的子类设为默认下载器，如果同时用了两个则会变成最后一个，因为只设定了一次
@@ -372,7 +400,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
             }
         }
         if (!storageFolder.canWrite()) {
-            throw KDownloadException("父文件夹没有写入权限")
+            throw KDownloadException("父文件夹没有写入权限, Path: ${storageFolder.absolutePath}")
         }
 
         // 校验URL的正确性。然后校验的是网络
@@ -410,6 +438,7 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
                 }
                 Debug.log("${task.name} - 存在同名文件，删除=${sameNameDelete}")
             } else {
+                // todo 文件正确的情况下可以直接回调
                 throw KDownloadException("下载存在同名文件，且未设定覆盖")
             }
         }
@@ -654,10 +683,18 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
 
     private fun <T : AbstractKDownloadTask> onProgressEvent(task: AbstractKDownloadTask, event: DownloadEvent<T>?) {
         Debug.log("${task.name} - ${task.percentageProgress}%")
-        // 进度的耗时业务处理不能影响到下载
-        GlobalScope.launch(Dispatchers.IO) {
-            event?.progress?.invoke()
-            downloadListener?.onProgress(task)
+        // 内部处理协程
+        task.callOnProgress()
+        // 进度的耗时业务处理不能影响到下载，防止调用者不知道
+        event?.progress?.let {
+            GlobalScope.launch(Dispatchers.IO) {
+                it.invoke()
+            }
+        }
+        downloadListener?.let {
+            GlobalScope.launch(Dispatchers.IO) {
+                it.onProgress(task)
+            }
         }
     }
 
@@ -733,6 +770,17 @@ abstract class AbstractKDownloader(taskPersistenceType: @PersistenceType Int = P
     /** Returns the Content-Length as reported by the response headers. */
     private fun Response.getContentLengthOrNull(): Long? {
         return headers["Content-Length"]?.toLongOrNull()
+    }
+
+    /**
+     * 是否在任务列表中
+     */
+    private fun <T : AbstractKDownloadTask> isInHistoryTaskList(task: T): AbstractKDownloadTask? {
+        return history.find(task)
+    }
+
+    private fun <T : AbstractKDownloadTask> addToHistoryTaskList(task: T): Boolean {
+        return history.add(task)
     }
 
     /** 设为默认下载，没有反选，暂时想不到有反选的需求的场景 */
